@@ -1,13 +1,117 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum UserRole {
+  OWNER
+  DRIVER
+  ADMIN
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TripStatus {
+  PENDING
+  SEARCHING
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  SCHEDULED
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+}
+
+model User {
+  id               String          @id @default(uuid())
+  name             String
+  email            String          @unique
+  phone            String
+  passwordHash     String
+  role             UserRole
+  rating           Float           @default(5.0)
+  totalTrips       Int             @default(0)
+  avatarUrl        String?
+  walletBalance    Float           @default(0)
+  isBlocked        Boolean         @default(false)
+  carType          String?
+  gender           String?
+  address          String?
+  nationality      String?
+  age              String?
+  nin              String?
+  transmission     String?
+  approvalStatus   ApprovalStatus?
+  licenseImageUrl  String?
+  ninImageUrl      String?
+  selfieImageUrl   String?
+  backgroundCheckAccepted Boolean  @default(false)
+  locationLat      Float?
+  locationLng      Float?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  tripsAsOwner     Trip[]          @relation("OwnerTrips")
+  tripsAsDriver    Trip[]          @relation("DriverTrips")
+  payouts          Payout[]
+}
+
+model Trip {
+  id               String      @id @default(uuid())
+  status           TripStatus  @default(PENDING)
+  pickupAddress    String
+  pickupLat        Float
+  pickupLng        Float
+  destAddress      String
+  destLat          Float
+  destLng          Float
+  amount           Float
+  distanceKm       Float
+  commissionAmount Float       @default(0)
+  driverEarnings   Float       @default(0)
+  scheduledAt      DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  completedAt      DateTime?
+  owner            User        @relation("OwnerTrips", fields: [ownerId], references: [id])
+  ownerId          String
+  driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
+  driverId         String?
+  payout           Payout?
+}
+
+model Payout {
+  id            String       @id @default(uuid())
+  amount        Float
+  status        PayoutStatus @default(PENDING)
+  bankName      String?
+  accountName   String?
+  accountNumber String?
+  requestedAt   DateTime     @default(now())
+  approvedAt    DateTime?
+  driver        User         @relation(fields: [driverId], references: [id])
+  driverId      String
+  trip          Trip?        @relation(fields: [tripId], references: [id])
+  tripId        String?      @unique
+}
+
+model SystemSettings {
+  id          Int      @id @default(1)
+  baseFare    Float    @default(500)
+  pricePerKm  Float    @default(100)
+  timeRate    Float    @default(50)
+  commission  Float    @default(25)
+  autoApprove Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+  updatedById String?
 }
