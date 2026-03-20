@@ -7,6 +7,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { LocationsModule } from './locations/locations.module';
 import { AdminModule } from './admin/admin.module';
 import { ConfigModule } from '@nestjs/config';
+import { SettingsModule } from './settings/settings.module';
 
 
 
@@ -22,6 +23,7 @@ import { ConfigModule } from '@nestjs/config';
     PaymentsModule,
     LocationsModule,
     AdminModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

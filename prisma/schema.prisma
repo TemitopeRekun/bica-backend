@@ -33,6 +33,19 @@ enum PayoutStatus {
   PAID
 }
 
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+}
+
+enum DisbursementStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 model User {
   id               String          @id @default(uuid())
   name             String
@@ -63,7 +76,13 @@ model User {
   updatedAt        DateTime        @updatedAt
   tripsAsOwner     Trip[]          @relation("OwnerTrips")
   tripsAsDriver    Trip[]          @relation("DriverTrips")
+  bankName              String?
+  bankCode              String?
+  accountNumber         String?
+  accountName           String?
+  monnifySubAccountCode String?
   payouts          Payout[]
+  disbursements   Disbursement[]
 }
 
 model Trip {
@@ -83,11 +102,15 @@ model Trip {
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   completedAt      DateTime?
+  paymentStatus   PaymentStatus  @default(UNPAID)
+  monnifyTxRef    String?        @unique
+  paidAt          DateTime?
   owner            User        @relation("OwnerTrips", fields: [ownerId], references: [id])
   ownerId          String
   driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
   driverId         String?
   payout           Payout?
+  paymentRecord   PaymentRecord?
 }
 
 model Payout {
@@ -114,4 +137,34 @@ model SystemSettings {
   autoApprove Boolean  @default(false)
   updatedAt   DateTime @updatedAt
   updatedById String?
+}
+
+model PaymentRecord {
+  id              String    @id @default(uuid())
+  tripId          String    @unique
+  trip            Trip      @relation(fields: [tripId], references: [id])
+  totalAmount     Float
+  driverAmount    Float
+  platformAmount  Float
+  monnifyTxRef    String    @unique
+  paymentMethod   String?
+  paidAt          DateTime
+  webhookPayload  Json
+  createdAt       DateTime  @default(now())
+}
+
+model Disbursement {
+  id            String             @id @default(uuid())
+  driverId      String
+  driver        User               @relation(fields: [driverId], references: [id])
+  amount        Float
+  bankName      String
+  bankCode      String
+  accountNumber String
+  accountName   String
+  monnifyRef    String?            @unique
+  status        DisbursementStatus @default(PENDING)
+  requestedAt   DateTime           @default(now())
+  completedAt   DateTime?
+  webhookPayload Json?
 }

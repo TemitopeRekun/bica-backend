@@ -56,4 +56,22 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   transmission?: string;
+
+  // Bank details — required for drivers
+@IsOptional()
+@IsString()
+bankName?: string;
+
+@IsOptional()
+@IsString()
+bankCode?: string;
+
+@IsOptional()
+@IsString()
+accountNumber?: string;
+
+@IsOptional()
+@IsString()
+accountName?: string;
+
 }

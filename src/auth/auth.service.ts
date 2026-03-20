@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   UnauthorizedException,
+  BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -28,6 +29,15 @@ export class AuthService {
       throw new ConflictException('An account with this email already exists');
     }
 
+    if (dto.role === UserRole.DRIVER) {
+
+      if (!dto.bankName || !dto.bankCode || !dto.accountNumber || !dto.accountName) {
+       throw new BadRequestException(
+      'Drivers must provide bank details: bankName, bankCode, accountNumber, accountName',
+       );
+    }
+}
+
     // 2. Hash the password — never store plain text
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -53,6 +63,10 @@ export class AuthService {
         age: dto.age,
         nin: dto.nin,
         transmission: dto.transmission,
+        bankName: dto.bankName,
+        bankCode: dto.bankCode,
+        accountNumber: dto.accountNumber,
+        accountName: dto.accountName,
       },
     });
 
@@ -124,4 +138,6 @@ export class AuthService {
     const { passwordHash, ...rest } = user;
     return rest;
   }
+
+  
 }
