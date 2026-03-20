@@ -3,7 +3,7 @@ import {
   ConflictException,
   UnauthorizedException,
   BadRequestException,
-  NotFoundException,
+  NotFoundException, Inject, forwardRef,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,12 +11,16 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { PaymentsService } from '../payments/payments.service';
+
 
 @Injectable()
 export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwt: JwtService,
+    @Inject(forwardRef(() => PaymentsService))
+    private paymentsService: PaymentsService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -73,11 +77,23 @@ export class AuthService {
     // 5. Issue JWT token immediately after registration
     const token = await this.signToken(user.id, user.email, user.role);
 
+    if (dto.role === UserRole.DRIVER) {
+  setImmediate(() => {
+    this.paymentsService
+      .createDriverSubAccount(user.id)
+      .catch((err) =>
+        console.error('Sub account creation failed:', err),
+      );
+  });
+}
+
     // 6. Return token and user (never return passwordHash)
     return {
       token,
       user: this.sanitizeUser(user),
     };
+
+
   }
 
   async login(dto: LoginDto) {

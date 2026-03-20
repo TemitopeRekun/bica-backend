@@ -9,17 +9,16 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter(),
+    new FastifyAdapter({ logger: false }),
   );
 
   app.enableCors({ origin: '*' });
 
-  // Activates all class-validator decorators globally
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true,       // strips fields not in the DTO
-      forbidNonWhitelisted: true, // throws error if unknown fields sent
-      transform: true,       // auto-converts types (e.g string "5" to number 5)
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
     }),
   );
 

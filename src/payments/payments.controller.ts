@@ -2,46 +2,66 @@ import {
   Controller,
   Post,
   Get,
-  Patch,
-  Delete,
   Param,
   Body,
-  Query,
   UseGuards,
+  Headers,
+  Req,
+  RawBodyRequest,
 } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
-import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 import { NIGERIAN_BANKS } from './banks';
-
-
+import { FastifyRequest } from 'fastify';
 
 @Controller('payments')
 export class PaymentsController {
-    constructor(private paymentsService: PaymentsService) {}
+  constructor(private paymentsService: PaymentsService) {}
 
-    @Get('banks')
-    getBanks() {
-      return NIGERIAN_BANKS;
-    }
-    
-    // Driver requests a payout
-    // POST /payments/payout
-  @UseGuards(AuthGuard, RolesGuard)
-  @Roles(UserRole.DRIVER)
-  @Post('payout')
-  requestPayout(
-    @CurrentUser() user: any,
-    @Body() dto: RequestPayoutDto,
-  ) {
-    return this.paymentsService.requestPayout(user.sub, dto);
+  // ─── PUBLIC ───────────────────────────────────────────────────────
+
+  // GET /payments/banks — no auth, used on registration screen
+  @Get('banks')
+  getBanks() {
+    return NIGERIAN_BANKS;
   }
 
-  // Driver views their wallet summary + payout history
+  // POST /payments/webhook — Monnify calls this, no JWT auth
+  // Security handled inside service via signature verification
+  @Post('webhook')
+async handleWebhook(
+  @Headers('monnify-signature') signature: string,
+  @Body() payload: any,
+) {
+  const rawBody = JSON.stringify(payload);
+    // Immediately return 200 per Monnify best practice
+    // Processing happens after acknowledgement
+    this.paymentsService
+      .processWebhook(rawBody, signature, payload)
+      .catch((err) => console.error('Webhook processing error:', err));
+
+    return { status: 'received' };
+  }
+
+  // ─── PROTECTED ────────────────────────────────────────────────────
+
+  // Owner initiates payment after trip completes
+  // POST /payments/initiate/:tripId
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.OWNER)
+  @Post('initiate/:tripId')
+  initiatePayment(
+    @Param('tripId') tripId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.paymentsService.initiatePayment(tripId, user.sub);
+  }
+
+  // Driver views wallet summary and earnings
   // GET /payments/wallet
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.DRIVER)
@@ -50,40 +70,29 @@ export class PaymentsController {
     return this.paymentsService.getWalletSummary(user.sub);
   }
 
-  // Driver views their own payouts
-  // GET /payments/my-payouts
-  @UseGuards(AuthGuard, RolesGuard)
-  @Roles(UserRole.DRIVER)
-  @Get('my-payouts')
-  getMyPayouts(@CurrentUser() user: any) {
-    return this.paymentsService.findMyPayouts(user.sub);
+  // Any authenticated user views payment history
+  // GET /payments/history
+  @UseGuards(AuthGuard)
+  @Get('history')
+  getHistory(@CurrentUser() user: any) {
+    return this.paymentsService.getPaymentHistory(user.sub, user.role);
   }
 
-  // Admin views all payouts, optionally filtered by status
-  // GET /payments/payouts
-  // GET /payments/payouts?status=PENDING
+  // Admin views all pending payments
+  // GET /payments/pending
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  @Get('payouts')
-  findAll(@Query('status') status?: 'PENDING' | 'PAID') {
-    return this.paymentsService.findAll(status);
+  @Get('pending')
+  getPending() {
+    return this.paymentsService.getPendingPayments();
   }
 
-  // Admin approves a payout
-  // PATCH /payments/payouts/:id/approve
+  // Admin triggers monthly wallet reset
+  // POST /payments/wallet/reset
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  @Patch('payouts/:id/approve')
-  approvePayout(@Param('id') id: string) {
-    return this.paymentsService.approvePayout(id);
-  }
-
-  // Admin rejects a payout — refunds wallet
-  // DELETE /payments/payouts/:id/reject
-  @UseGuards(AuthGuard, RolesGuard)
-  @Roles(UserRole.ADMIN)
-  @Delete('payouts/:id/reject')
-  rejectPayout(@Param('id') id: string) {
-    return this.paymentsService.rejectPayout(id);
+  @Post('wallet/reset')
+  resetWallets(@CurrentUser() user: any) {
+    return this.paymentsService.resetWallets(user.sub);
   }
 }
