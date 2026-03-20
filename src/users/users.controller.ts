@@ -69,6 +69,7 @@ export class UsersController {
 
   // Driver: update their own live location
   // PATCH /users/location
+  @Roles(UserRole.DRIVER)
   @Patch('location')
   updateLocation(
     @CurrentUser() user: any,
