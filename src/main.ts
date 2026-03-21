@@ -12,7 +12,11 @@ async function bootstrap() {
     new FastifyAdapter({ logger: false }),
   );
 
-  app.enableCors({ origin: '*' });
+ app.enableCors({
+  origin: ['http://localhost:3000', 'http://localhost:5173'],
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+});
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -22,6 +26,6 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(3000, '0.0.0.0');
+  await app.listen(3001, '0.0.0.0');
 }
 bootstrap();
