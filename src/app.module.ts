@@ -8,6 +8,7 @@ import { LocationsModule } from './locations/locations.module';
 import { AdminModule } from './admin/admin.module';
 import { ConfigModule } from '@nestjs/config';
 import { SettingsModule } from './settings/settings.module';
+import { RedisModule } from './redis/redis.module';
 
 
 
@@ -24,6 +25,7 @@ import { SettingsModule } from './settings/settings.module';
     LocationsModule,
     AdminModule,
     SettingsModule,
+    RedisModule,
   ],
 })
 export class AppModule {}
