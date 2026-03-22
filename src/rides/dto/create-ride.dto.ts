@@ -8,7 +8,6 @@ import {
 } from 'class-validator';
 
 export class CreateRideDto {
-  // Pickup
   @IsString()
   pickupAddress: string;
 
@@ -20,7 +19,6 @@ export class CreateRideDto {
   @Min(-180) @Max(180)
   pickupLng: number;
 
-  // Destination
   @IsString()
   destAddress: string;
 
@@ -32,17 +30,20 @@ export class CreateRideDto {
   @Min(-180) @Max(180)
   destLng: number;
 
-  // Distance in km — calculated on frontend, verified on backend
   @IsNumber()
   @Min(0)
   distanceKm: number;
 
-  // Optional — only for scheduled rides
+  // From Google Distance Matrix — stored for surcharge calculation
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  estimatedMins?: number;
+
   @IsOptional()
   @IsDateString()
   scheduledAt?: string;
 
-  // Vehicle details from the frontend modal
   @IsOptional()
   @IsString()
   vehicleMake?: string;

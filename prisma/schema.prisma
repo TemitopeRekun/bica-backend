@@ -102,6 +102,10 @@ model Trip {
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   completedAt      DateTime?
+  startedAt        DateTime?        // when driver clicks Start Trip
+  estimatedMins    Float?           // from Google Distance Matrix at booking
+  finalFare        Float? 
+  fareBreakdown    Json?    // stores distanceComponent, timeComponent, extraMins etc
   paymentStatus   PaymentStatus  @default(UNPAID)
   monnifyTxRef    String?        @unique
   paidAt          DateTime?

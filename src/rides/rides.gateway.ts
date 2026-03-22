@@ -21,21 +21,27 @@ export class RidesGateway
 
   // Track which socket belongs to which driver
   private driverSockets = new Map<string, string>();
+  // Track which socket belongs to which owner
+  private ownerSockets = new Map<string, string>();
 
   handleConnection(client: Socket) {
     console.log(`Client connected: ${client.id}`);
   }
 
-  handleDisconnect(client: Socket) {
-    // Remove driver from tracking map on disconnect
-    for (const [driverId, socketId] of this.driverSockets.entries()) {
-      if (socketId === client.id) {
-        this.driverSockets.delete(driverId);
-        console.log(`Driver ${driverId} disconnected`);
-        break;
-      }
+ handleDisconnect(client: Socket) {
+  for (const [driverId, socketId] of this.driverSockets.entries()) {
+    if (socketId === client.id) {
+      this.driverSockets.delete(driverId);
+      break;
     }
   }
+  for (const [ownerId, socketId] of this.ownerSockets.entries()) {
+    if (socketId === client.id) {
+      this.ownerSockets.delete(ownerId);
+      break;
+    }
+  }
+}
 
   // Driver registers their socket with their user ID
   @SubscribeMessage('driver:register')
@@ -61,6 +67,12 @@ export class RidesGateway
       timestamp: new Date().toISOString(),
     });
   }
+  notifyOwnerTripCompleted(ownerId: string, tripData: any) {
+  const socketId = this.ownerSockets.get(ownerId);
+  if (socketId) {
+    this.server.to(socketId).emit('trip:completed', tripData);
+  }
+}
 
   // Owner/rider joins a room to track a specific driver
   @SubscribeMessage('track:driver')
@@ -71,6 +83,15 @@ export class RidesGateway
     client.join(`driver:${data.driverId}`);
     console.log(`Client ${client.id} tracking driver ${data.driverId}`);
   }
+
+  @SubscribeMessage('owner:register')
+handleOwnerRegister(
+  @MessageBody() data: { ownerId: string },
+  @ConnectedSocket() client: Socket,
+) {
+  this.ownerSockets.set(data.ownerId, client.id);
+  console.log(`Owner ${data.ownerId} registered socket ${client.id}`);
+}
 
   // Called by RidesService when a trip is assigned
   // Notifies the driver they have a new ride

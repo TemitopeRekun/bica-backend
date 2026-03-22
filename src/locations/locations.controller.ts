@@ -44,4 +44,26 @@ export class LocationsController {
 
     return this.locationsService.reverseGeocode(latNum, lngNum);
   }
+
+  // GET /locations/route?originLat=&originLng=&destLat=&destLng=
+// Called when owner selects both pickup and destination
+// Returns real road distance, estimated time, and fare range
+@Get('route')
+async getRoute(
+  @Query('originLat') originLat: string,
+  @Query('originLng') originLng: string,
+  @Query('destLat') destLat: string,
+  @Query('destLng') destLng: string,
+) {
+  const oLat = parseFloat(originLat);
+  const oLng = parseFloat(originLng);
+  const dLat = parseFloat(destLat);
+  const dLng = parseFloat(destLng);
+
+  if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
+    throw new BadRequestException('All coordinates must be valid numbers');
+  }
+
+  return this.locationsService.getRouteDetails(oLat, oLng, dLat, dLng);
+}
 }

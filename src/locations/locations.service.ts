@@ -31,6 +31,7 @@ export class LocationsService {
     private config: ConfigService,
     private redis: RedisService,
   ) {}
+  
 
   // ─── AUTOCOMPLETE SEARCH ──────────────────────────────────────────
   // Called when user types in the location search box
@@ -261,4 +262,160 @@ export class LocationsService {
       return 'District';
     return 'Residential';
   }
+
+  // ─── ROUTE DETAILS ────────────────────────────────────────────────
+// Calls Google Distance Matrix API to get real road distance
+// and estimated travel time with current live traffic
+// This replaces the inaccurate Haversine formula
+
+async getRouteDetails(
+  originLat: number,
+  originLng: number,
+  destLat: number,
+  destLng: number,
+): Promise<{
+  distanceKm: number;
+  estimatedMins: number;
+  currentTrafficMins: number;
+  fareEstimate: { low: number; high: number };
+}> {
+  const cacheKey = `route:${originLat.toFixed(4)},${originLng.toFixed(4)}:${destLat.toFixed(4)},${destLng.toFixed(4)}`;
+
+  // Cache route for 10 minutes — traffic changes frequently
+  const cached = await this.redis.get<any>(cacheKey);
+  if (cached) {
+    this.logger.log(`Cache hit for route: ${cacheKey}`);
+    return cached;
+  }
+
+  const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+
+  try {
+    const response = await axios.get(
+      'https://maps.googleapis.com/maps/api/distancematrix/json',
+      {
+        params: {
+          origins: `${originLat},${originLng}`,
+          destinations: `${destLat},${destLng}`,
+          mode: 'driving',
+          departure_time: 'now',       // enables live traffic data
+          traffic_model: 'best_guess', // most accurate traffic estimate
+          key: apiKey,
+        },
+      },
+    );
+
+    const element = response.data.rows?.[0]?.elements?.[0];
+
+    if (!element || element.status !== 'OK') {
+      this.logger.error(`Distance Matrix error: ${element?.status}`);
+      // Fall back to Haversine if Google fails
+      return this.haversineFallback(originLat, originLng, destLat, destLng);
+    }
+
+    const distanceKm = element.distance.value / 1000;
+    // duration = without traffic, duration_in_traffic = with live traffic
+    const estimatedMins = Math.ceil(element.duration.value / 60);
+    const currentTrafficMins = Math.ceil(
+      (element.duration_in_traffic?.value ?? element.duration.value) / 60,
+    );
+
+    const fareEstimate = this.calculateFareRange(distanceKm, currentTrafficMins);
+
+    const result = {
+      distanceKm: Math.round(distanceKm * 10) / 10, // 1 decimal place
+      estimatedMins,
+      currentTrafficMins,
+      fareEstimate,
+    };
+
+    // Cache for 10 minutes
+    await this.redis.set(cacheKey, result, 600);
+    this.logger.log(
+      `Route: ${distanceKm.toFixed(1)}km, ${estimatedMins}mins base, ${currentTrafficMins}mins in traffic`,
+    );
+
+    return result;
+  } catch (error: any) {
+    this.logger.error(`Distance Matrix failed: ${error.message}`);
+    return this.haversineFallback(originLat, originLng, destLat, destLng);
+  }
+}
+
+// ─── FARE RANGE CALCULATOR ────────────────────────────────────────
+// Low  = distance only (no traffic surcharge)
+// High = distance + current traffic extra time
+
+private calculateFareRange(
+  distanceKm: number,
+  currentTrafficMins: number,
+): { low: number; high: number } {
+  const BASE_FARE = 500;
+  const RATE_PER_KM = 100;
+  const RATE_PER_MIN = 50;
+  const SHORT_TRIP_FLAT = 2000;
+  const SHORT_TRIP_KM = 4.5;
+
+  if (distanceKm <= SHORT_TRIP_KM) {
+    // Short trip — flat ₦2,000 base, surcharge only if traffic adds extra time
+    // We use current traffic as estimate — if no extra time, just flat rate
+    const low = SHORT_TRIP_FLAT;
+    // High = flat + potential traffic surcharge
+    // We don't know exact estimate yet (that's stored per trip)
+    // So high = flat + (currentTrafficMins × 0.3 × RATE_PER_MIN) as rough upper bound
+    const high = Math.round(
+      (SHORT_TRIP_FLAT + currentTrafficMins * 0.3 * RATE_PER_MIN) / 50,
+    ) * 50;
+    return { low, high: Math.max(low, high) };
+  }
+
+  // Standard trip
+  const baseFare = BASE_FARE + distanceKm * RATE_PER_KM;
+  const low = Math.round(baseFare / 50) * 50;
+  // High = base fare + extra time if current traffic is worse than base
+  // Use currentTrafficMins as the worst case time component
+  const high = Math.round(
+    (baseFare + currentTrafficMins * RATE_PER_MIN) / 50,
+  ) * 50;
+
+  return { low, high };
+}
+
+// ─── HAVERSINE FALLBACK ───────────────────────────────────────────
+// Used when Google API fails — less accurate but never crashes
+
+private haversineFallback(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): {
+  distanceKm: number;
+  estimatedMins: number;
+  currentTrafficMins: number;
+  fareEstimate: { low: number; high: number };
+} {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distanceKm = Math.round(R * c * 10) / 10;
+
+  // Estimate time at 30km/h average Lagos speed
+  const estimatedMins = Math.ceil((distanceKm / 30) * 60);
+  const currentTrafficMins = Math.ceil(estimatedMins * 1.5); // 50% buffer
+
+  return {
+    distanceKm,
+    estimatedMins,
+    currentTrafficMins,
+    fareEstimate: this.calculateFareRange(distanceKm, currentTrafficMins),
+  };
+}
 }

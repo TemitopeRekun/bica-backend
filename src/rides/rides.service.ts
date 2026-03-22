@@ -8,31 +8,69 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { TripStatus, UserRole } from '@prisma/client';
+import { RidesGateway } from './rides.gateway';
 
 @Injectable()
 export class RidesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private gateway: RidesGateway,
+  ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
+  // Called at BOOKING time with Google's road distance + estimated mins
+  // Returns the estimated fare shown to owner before confirming
 
-  private calculatePrice(
+  private calculateEstimatedFare(
     distanceKm: number,
-    settings: {
-      baseFare: number;
-      pricePerKm: number;
-      timeRate: number;
-    },
+    settings: { baseFare: number; pricePerKm: number },
   ): number {
-    // Short trip flat rate rule from BICA requirements
     if (distanceKm <= 4.5) {
-      return 2000;
+      return 2000; // flat rate for short trips
+    }
+    const price = settings.baseFare + distanceKm * settings.pricePerKm;
+    return Math.round(price / 50) * 50;
+  }
+
+  // ─── FINAL FARE ENGINE ───────────────────────────────────────────
+  // Called at COMPLETION time with actual elapsed minutes
+  // extraMins = max(0, actualMins - estimatedMins)
+  // Surcharge = extraMins × timeRate
+
+  private calculateFinalFare(
+    distanceKm: number,
+    estimatedMins: number,
+    actualMins: number,
+    settings: { baseFare: number; pricePerKm: number; timeRate: number },
+  ): {
+    finalFare: number;
+    distanceComponent: number;
+    timeComponent: number;
+    extraMins: number;
+  } {
+    const extraMins = Math.max(0, actualMins - estimatedMins);
+    const timeComponent = extraMins * settings.timeRate;
+
+    let baseFare: number;
+    let distanceComponent: number;
+
+    if (distanceKm <= 4.5) {
+      baseFare = 2000;
+      distanceComponent = 0; // flat rate, no separate distance component
+    } else {
+      baseFare = settings.baseFare;
+      distanceComponent = distanceKm * settings.pricePerKm;
     }
 
-    // Standard formula for longer trips
-    const price = settings.baseFare + distanceKm * settings.pricePerKm;
+    const rawFare = baseFare + distanceComponent + timeComponent;
+    const finalFare = Math.round(rawFare / 50) * 50;
 
-    // Round to nearest 50 naira
-    return Math.round(price / 50) * 50;
+    return {
+      finalFare,
+      distanceComponent: Math.round(distanceComponent),
+      timeComponent: Math.round(timeComponent),
+      extraMins,
+    };
   }
 
   private calculateSplit(
@@ -44,9 +82,8 @@ export class RidesService {
     return { commissionAmount, driverEarnings };
   }
 
-  // ─── HAVERSINE DISTANCE ──────────────────────────────────────────
-  // Calculates straight-line distance between two GPS coordinates
-  // Used to find the nearest driver to a pickup point
+  // ─── HAVERSINE (kept for driver proximity only) ───────────────────
+  // NOT used for fare calculation — only for finding nearest driver
 
   private haversineDistance(
     lat1: number,
@@ -54,15 +91,15 @@ export class RidesService {
     lat2: number,
     lng2: number,
   ): number {
-    const R = 6371; // Earth radius in km
+    const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLng = ((lng2 - lng1) * Math.PI) / 180;
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   }
@@ -74,7 +111,6 @@ export class RidesService {
     pickupLng: number,
     transmission?: string,
   ) {
-    // Get all approved, unblocked drivers with a known location
     const drivers = await this.prisma.user.findMany({
       where: {
         role: UserRole.DRIVER,
@@ -96,19 +132,15 @@ export class RidesService {
 
     if (drivers.length === 0) return null;
 
-    // Filter by transmission preference if specified
     const eligible = transmission
       ? drivers.filter(
-          (d) =>
-            d.transmission === transmission ||
-            d.transmission === 'Both',
-        )
+        (d) =>
+          d.transmission === transmission || d.transmission === 'Both',
+      )
       : drivers;
 
     if (eligible.length === 0) return null;
 
-    // Calculate distance from each driver to pickup point
-    // then sort ascending to find closest
     const withDistance = eligible.map((driver) => ({
       ...driver,
       distanceKm: this.haversineDistance(
@@ -120,8 +152,6 @@ export class RidesService {
     }));
 
     withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
-
-    // Only assign if driver is within 50km
     const nearest = withDistance[0];
     if (nearest.distanceKm > 50) return null;
 
@@ -129,9 +159,10 @@ export class RidesService {
   }
 
   // ─── CREATE RIDE ─────────────────────────────────────────────────
+  // distanceKm and estimatedMins now come from Google Distance Matrix
+  // (calculated on frontend via GET /locations/route, sent in body)
 
   async createRide(ownerId: string, dto: CreateRideDto) {
-    // 1. Load current system settings for pricing
     const settings = await this.prisma.systemSettings.findUnique({
       where: { id: 1 },
     });
@@ -140,21 +171,20 @@ export class RidesService {
       throw new BadRequestException('System settings not configured');
     }
 
-    // 2. Calculate fare
-    const amount = this.calculatePrice(dto.distanceKm, settings);
+    // Use Google's real road distance from DTO
+    // Frontend sends this from the /locations/route call
+    const amount = this.calculateEstimatedFare(dto.distanceKm, settings);
     const { commissionAmount, driverEarnings } = this.calculateSplit(
       amount,
       settings.commission,
     );
 
-    // 3. Find nearest available driver
     const nearestDriver = await this.findNearestDriver(
       dto.pickupLat,
       dto.pickupLng,
       dto.transmission,
     );
 
-    // 4. Create the trip record
     const trip = await this.prisma.trip.create({
       data: {
         ownerId,
@@ -167,6 +197,7 @@ export class RidesService {
         destLat: dto.destLat,
         destLng: dto.destLng,
         distanceKm: dto.distanceKm,
+        estimatedMins: dto.estimatedMins ?? null, // from Google Distance Matrix
         amount,
         commissionAmount,
         driverEarnings,
@@ -220,7 +251,6 @@ export class RidesService {
 
     if (!trip) throw new NotFoundException('Trip not found');
 
-    // Users can only see their own trips
     if (trip.ownerId !== userId && trip.driverId !== userId) {
       throw new ForbiddenException('You do not have access to this trip');
     }
@@ -242,26 +272,79 @@ export class RidesService {
 
     if (!trip) throw new NotFoundException('Trip not found');
 
-    // Validate who can change to what status
     this.validateStatusTransition(trip, userId, userRole, dto.status);
 
     const updateData: any = { status: dto.status };
 
-    // If completing the trip, record the timestamp
-    // and credit the driver's wallet
+    // Record startedAt when driver begins the trip
+    if (dto.status === TripStatus.IN_PROGRESS) {
+      updateData.startedAt = new Date();
+    }
+
+    // Calculate final fare when trip completes
     if (dto.status === TripStatus.COMPLETED) {
       updateData.completedAt = new Date();
+
+
+      const settings = await this.prisma.systemSettings.findUnique({
+        where: { id: 1 },
+
+      });
+
+      // Calculate actual elapsed minutes from startedAt
+      const startedAt = trip.startedAt ?? new Date();
+      const actualMins = Math.ceil(
+        (updateData.completedAt.getTime() - startedAt.getTime()) / 60000,
+      );
+
+      const estimatedMins = trip.estimatedMins ?? actualMins;
+
+      const { finalFare, distanceComponent, timeComponent, extraMins } =
+        this.calculateFinalFare(
+          trip.distanceKm,
+          estimatedMins,
+          actualMins,
+          settings!,
+        );
+
+      const { commissionAmount, driverEarnings } = this.calculateSplit(
+        finalFare,
+        settings!.commission,
+      );
+
+      // Update fare fields with final calculated values
+      updateData.finalFare = finalFare;
+      updateData.amount = finalFare; // keep amount in sync
+      updateData.commissionAmount = commissionAmount;
+      updateData.driverEarnings = driverEarnings;
+
+      // Attach breakdown for response transparency
+      updateData.fareBreakdown = {
+        distanceKm: trip.distanceKm,
+        distanceComponent,
+        timeComponent,
+        extraMins,
+        estimatedMins,
+        actualMins,
+        finalFare,
+        driverEarnings,
+        commissionAmount,
+      };
 
       if (trip.driverId) {
         await this.prisma.user.update({
           where: { id: trip.driverId },
           data: {
-            walletBalance: { increment: trip.driverEarnings },
+            walletBalance: { increment: driverEarnings },
             totalTrips: { increment: 1 },
           },
         });
 
-        // Also increment owner's trip count
+        this.gateway.notifyOwnerTripCompleted(trip.ownerId, {
+          tripId: trip.id,
+          fareBreakdown: updateData.fareBreakdown,
+        });
+
         await this.prisma.user.update({
           where: { id: trip.ownerId },
           data: { totalTrips: { increment: 1 } },
@@ -269,19 +352,38 @@ export class RidesService {
       }
     }
 
-    return this.prisma.trip.update({
+    // Handle cancellation — no fare charged
+    if (dto.status === TripStatus.CANCELLED) {
+      updateData.amount = 0;
+      updateData.commissionAmount = 0;
+      updateData.driverEarnings = 0;
+      updateData.finalFare = 0;
+    }
+
+    const fareBreakdown = updateData._fareBreakdown;
+    delete updateData._fareBreakdown; // don't try to save this to DB
+
+    const updated = await this.prisma.trip.update({
       where: { id: tripId },
       data: updateData,
       include: {
         driver: {
           select: { id: true, name: true, walletBalance: true },
         },
+        owner: {
+          select: { id: true, name: true },
+        },
       },
     });
+
+    // Attach fare breakdown to response so frontend can display it
+    return {
+      ...updated,
+      fareBreakdown: fareBreakdown ?? null,
+    };
   }
 
   // ─── STATUS TRANSITION RULES ─────────────────────────────────────
-  // Enforces who can move the trip to which status
 
   private validateStatusTransition(
     trip: any,
@@ -294,10 +396,8 @@ export class RidesService {
     const isAdmin = userRole === UserRole.ADMIN;
 
     const allowed: Partial<Record<TripStatus, TripStatus[]>> = {
-      // Driver moves these forward
       [TripStatus.ASSIGNED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
       [TripStatus.IN_PROGRESS]: [TripStatus.COMPLETED],
-      // Owner can cancel before trip starts
       [TripStatus.SEARCHING]: [TripStatus.CANCELLED],
     };
 
@@ -309,16 +409,16 @@ export class RidesService {
       );
     }
 
-    // Only driver can start/complete a trip
     if (
-  ([TripStatus.IN_PROGRESS, TripStatus.COMPLETED] as TripStatus[]).includes(newStatus) &&
-  !isDriver &&
-  !isAdmin
-) {
+      (
+        [TripStatus.IN_PROGRESS, TripStatus.COMPLETED] as TripStatus[]
+      ).includes(newStatus) &&
+      !isDriver &&
+      !isAdmin
+    ) {
       throw new ForbiddenException('Only the assigned driver can do this');
     }
 
-    // Only owner or admin can cancel
     if (newStatus === TripStatus.CANCELLED && !isOwner && !isAdmin) {
       throw new ForbiddenException('Only the owner can cancel this ride');
     }
@@ -329,7 +429,7 @@ export class RidesService {
   async getHistory(userId: string, userRole: UserRole) {
     const where =
       userRole === UserRole.ADMIN
-        ? {} // admin sees all trips
+        ? {}
         : userRole === UserRole.DRIVER
           ? { driverId: userId }
           : { ownerId: userId };
