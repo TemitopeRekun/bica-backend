@@ -10,7 +10,7 @@ import { UserRole } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   // Get all users — admin only, with optional role filter
   async findAll(role?: UserRole) {
@@ -104,6 +104,15 @@ export class UsersService {
     });
   }
 
+  // Driver toggles online/offline status
+  async updateOnlineStatus(id: string, isOnline: boolean) {
+    return this.prisma.user.update({
+      where: { id },
+      data: { isOnline },
+      select: { id: true, name: true, isOnline: true },
+    });
+  }
+
   // Admin: block or unblock any user
   async toggleBlock(id: string, isBlocked: boolean) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -131,12 +140,17 @@ export class UsersService {
 
   // System: get all approved, online drivers
   // Used by ride assignment algorithm in Phase 4
-  async getAvailableDrivers() {
-    return this.prisma.user.findMany({
+  async getAvailableDrivers(
+    pickupLat?: number,
+    pickupLng?: number,
+  ) {
+    // Get all online, approved, unblocked drivers with a location
+    const drivers = await this.prisma.user.findMany({
       where: {
         role: UserRole.DRIVER,
         approvalStatus: 'APPROVED',
         isBlocked: false,
+        isOnline: true,
         locationLat: { not: null },
         locationLng: { not: null },
       },
@@ -144,11 +158,82 @@ export class UsersService {
         id: true,
         name: true,
         rating: true,
+        totalTrips: true,
         avatarUrl: true,
         transmission: true,
         locationLat: true,
         locationLng: true,
+        // Check for active trips
+        tripsAsDriver: {
+          where: {
+            status: {
+              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
+            },
+          },
+          select: { id: true },
+        },
       },
     });
+
+    // Filter out drivers with active trips
+    const available = drivers.filter(
+      (d) => d.tripsAsDriver.length === 0,
+    );
+
+    // If pickup coords provided, calculate distance and sort by nearest
+    if (pickupLat && pickupLng) {
+      const withDistance = available.map((driver) => {
+        const distanceKm = this.calculateDistance(
+          pickupLat,
+          pickupLng,
+          driver.locationLat!,
+          driver.locationLng!,
+        );
+        return {
+          id: driver.id,
+          name: driver.name,
+          rating: driver.rating,
+          totalTrips: driver.totalTrips,
+          avatarUrl: driver.avatarUrl,
+          transmission: driver.transmission,
+          locationLat: driver.locationLat,
+          locationLng: driver.locationLng,
+          distanceKm: Math.round(distanceKm * 10) / 10,
+          estimatedArrivalMins: Math.max(
+            Math.round((distanceKm / 40) * 60),
+            2,
+          ),
+        };
+      });
+
+      // Sort by distance — nearest first
+      withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
+      return withDistance;
+    }
+
+    return available.map((d) => ({
+      ...d,
+      tripsAsDriver: undefined,
+      distanceKm: null,
+      estimatedArrivalMins: null,
+    }));
+  }
+
+  private calculateDistance(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number,
+  ): number {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 }

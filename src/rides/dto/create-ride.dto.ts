@@ -2,6 +2,7 @@ import {
   IsString,
   IsNumber,
   IsOptional,
+  IsNotEmpty,
   IsDateString,
   Min,
   Max,
@@ -59,4 +60,9 @@ export class CreateRideDto {
   @IsOptional()
   @IsString()
   transmission?: string;
+
+  // Driver selected by owner from the list
+  @IsString()
+  @IsNotEmpty()
+  driverId: string;
 }

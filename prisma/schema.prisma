@@ -21,11 +21,13 @@ enum ApprovalStatus {
 enum TripStatus {
   PENDING
   SEARCHING
+  PENDING_ACCEPTANCE
   ASSIGNED
   IN_PROGRESS
   COMPLETED
   CANCELLED
   SCHEDULED
+  DECLINED
 }
 
 enum PayoutStatus {
@@ -58,6 +60,7 @@ model User {
   avatarUrl        String?
   walletBalance    Float           @default(0)
   isBlocked        Boolean         @default(false)
+  isOnline         Boolean         @default(false)
   carType          String?
   gender           String?
   address          String?

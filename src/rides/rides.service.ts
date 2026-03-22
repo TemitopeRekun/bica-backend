@@ -32,6 +32,130 @@ export class RidesService {
     return Math.round(price / 50) * 50;
   }
 
+  async acceptRide(tripId: string, driverId: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      include: {
+        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true, transmission: true } },
+      },
+    });
+
+    if (!trip) throw new NotFoundException('Trip not found');
+
+    if (trip.driverId !== driverId) {
+      throw new ForbiddenException('This trip was not assigned to you');
+    }
+
+    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) {
+      throw new BadRequestException(
+        `Cannot accept a trip with status ${trip.status}`,
+      );
+    }
+
+    // Cancel the auto-decline timer
+    this.cancelAcceptanceTimer(tripId);
+
+    const updated = await this.prisma.trip.update({
+      where: { id: tripId },
+      data: { status: TripStatus.ASSIGNED },
+      include: {
+        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true, transmission: true } },
+      },
+    });
+
+    // Notify owner that driver accepted
+    this.gateway.notifyOwnerDriverAccepted(trip.ownerId, {
+      tripId,
+      driver: updated.driver,
+      estimatedArrivalMins: 5, // could calculate this properly
+    });
+
+    return updated;
+  }
+
+  async declineRide(tripId: string, driverId: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+    });
+
+    if (!trip) throw new NotFoundException('Trip not found');
+
+    if (trip.driverId !== driverId) {
+      throw new ForbiddenException('This trip was not assigned to you');
+    }
+
+    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) {
+      throw new BadRequestException(
+        `Cannot decline a trip with status ${trip.status}`,
+      );
+    }
+
+    // Cancel the auto-decline timer
+    this.cancelAcceptanceTimer(tripId);
+
+    await this.prisma.trip.update({
+      where: { id: tripId },
+      data: { status: TripStatus.DECLINED },
+    });
+
+    // Notify owner to pick another driver
+    this.gateway.notifyOwnerDriverDeclined(trip.ownerId, {
+      tripId,
+      reason: 'declined',
+      message: 'Driver declined the request. Please select another driver.',
+    });
+
+    return { message: 'Ride declined successfully' };
+  }
+
+  // Map to track active timers so we can cancel them on accept/decline
+  private acceptanceTimers = new Map<string, NodeJS.Timeout>();
+
+  private startAcceptanceTimer(
+    tripId: string,
+    ownerId: string,
+    driverId: string,
+  ) {
+    const timer = setTimeout(async () => {
+      // Check if trip is still pending acceptance
+      const trip = await this.prisma.trip.findUnique({
+        where: { id: tripId },
+        select: { status: true },
+      });
+
+      if (trip?.status === TripStatus.PENDING_ACCEPTANCE) {
+        // Auto-decline — driver didn't respond
+        await this.prisma.trip.update({
+          where: { id: tripId },
+          data: { status: TripStatus.DECLINED },
+        });
+
+        // Notify owner to pick another driver
+        this.gateway.notifyOwnerDriverDeclined(ownerId, {
+          tripId,
+          reason: 'timeout',
+          message: 'Driver did not respond. Please select another driver.',
+        });
+
+        console.log(`Trip ${tripId} auto-declined after 60s timeout`);
+      }
+
+      this.acceptanceTimers.delete(tripId);
+    }, 60000); // 60 seconds
+
+    this.acceptanceTimers.set(tripId, timer);
+  }
+
+  private cancelAcceptanceTimer(tripId: string) {
+    const timer = this.acceptanceTimers.get(tripId);
+    if (timer) {
+      clearTimeout(timer);
+      this.acceptanceTimers.delete(tripId);
+    }
+  }
+
   // ─── FINAL FARE ENGINE ───────────────────────────────────────────
   // Called at COMPLETION time with actual elapsed minutes
   // extraMins = max(0, actualMins - estimatedMins)
@@ -171,25 +295,45 @@ export class RidesService {
       throw new BadRequestException('System settings not configured');
     }
 
-    // Use Google's real road distance from DTO
-    // Frontend sends this from the /locations/route call
+    // Verify chosen driver is still available
+    const driver = await this.prisma.user.findUnique({
+      where: { id: dto.driverId },
+      include: {
+        tripsAsDriver: {
+          where: {
+            status: {
+              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
+            },
+          },
+        },
+      },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    if (!driver.isOnline) {
+      throw new BadRequestException('This driver is no longer online');
+    }
+
+    if (driver.tripsAsDriver.length > 0) {
+      throw new BadRequestException(
+        'This driver has just been assigned another trip. Please select a different driver.',
+      );
+    }
+
     const amount = this.calculateEstimatedFare(dto.distanceKm, settings);
     const { commissionAmount, driverEarnings } = this.calculateSplit(
       amount,
       settings.commission,
     );
 
-    const nearestDriver = await this.findNearestDriver(
-      dto.pickupLat,
-      dto.pickupLng,
-      dto.transmission,
-    );
-
     const trip = await this.prisma.trip.create({
       data: {
         ownerId,
-        driverId: nearestDriver?.id ?? null,
-        status: nearestDriver ? TripStatus.ASSIGNED : TripStatus.SEARCHING,
+        driverId: dto.driverId,
+        status: TripStatus.PENDING_ACCEPTANCE, // ← waiting for driver to accept
         pickupAddress: dto.pickupAddress,
         pickupLat: dto.pickupLat,
         pickupLng: dto.pickupLng,
@@ -197,7 +341,7 @@ export class RidesService {
         destLat: dto.destLat,
         destLng: dto.destLng,
         distanceKm: dto.distanceKm,
-        estimatedMins: dto.estimatedMins ?? null, // from Google Distance Matrix
+        estimatedMins: dto.estimatedMins ?? null,
         amount,
         commissionAmount,
         driverEarnings,
@@ -220,11 +364,18 @@ export class RidesService {
       },
     });
 
+    // Notify driver via WebSocket — they have 60 seconds to respond
+    this.gateway.notifyDriverNewRide(dto.driverId, {
+      ...trip,
+      estimatedArrivalMins: null,
+    });
+
+    // Start 60 second auto-decline timer
+    this.startAcceptanceTimer(trip.id, ownerId, dto.driverId);
+
     return {
       ...trip,
-      estimatedArrivalMins: nearestDriver
-        ? Math.max(Math.round((nearestDriver.distanceKm / 40) * 60), 2)
-        : null,
+      estimatedArrivalMins: null,
     };
   }
 
@@ -396,6 +547,7 @@ export class RidesService {
     const isAdmin = userRole === UserRole.ADMIN;
 
     const allowed: Partial<Record<TripStatus, TripStatus[]>> = {
+      [TripStatus.PENDING_ACCEPTANCE]: [TripStatus.ASSIGNED, TripStatus.DECLINED],
       [TripStatus.ASSIGNED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
       [TripStatus.IN_PROGRESS]: [TripStatus.COMPLETED],
       [TripStatus.SEARCHING]: [TripStatus.CANCELLED],

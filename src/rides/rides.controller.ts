@@ -19,7 +19,7 @@ import { UserRole } from '@prisma/client';
 @UseGuards(AuthGuard, RolesGuard)
 @Controller('rides')
 export class RidesController {
-  constructor(private ridesService: RidesService) {}
+  constructor(private ridesService: RidesService) { }
 
   // Owner books a ride
   // POST /rides
@@ -37,6 +37,26 @@ export class RidesController {
   @Get('history')
   getHistory(@CurrentUser() user: any) {
     return this.ridesService.getHistory(user.sub, user.role);
+  }
+
+  // Driver accepts a ride request
+  // POST /rides/:id/accept
+  @Post(':id/accept')
+  acceptRide(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.ridesService.acceptRide(id, user.sub);
+  }
+
+  // Driver declines a ride request
+  // POST /rides/:id/decline
+  @Post(':id/decline')
+  declineRide(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.ridesService.declineRide(id, user.sub);
   }
 
   // Get single trip — owner or driver of that trip only

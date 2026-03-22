@@ -19,7 +19,7 @@ import { UserRole } from '@prisma/client';
 @UseGuards(AuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private usersService: UsersService) {}
+  constructor(private usersService: UsersService) { }
 
   // Admin: list all users, optionally filter by role
   // GET /users
@@ -33,8 +33,13 @@ export class UsersController {
   // Any authenticated user: get available drivers
   // GET /users/drivers/available
   @Get('drivers/available')
-  getAvailableDrivers() {
-    return this.usersService.getAvailableDrivers();
+  getAvailableDrivers(
+    @Query('pickupLat') pickupLat?: string,
+    @Query('pickupLng') pickupLng?: string,
+  ) {
+    const lat = pickupLat ? parseFloat(pickupLat) : undefined;
+    const lng = pickupLng ? parseFloat(pickupLng) : undefined;
+    return this.usersService.getAvailableDrivers(lat, lng);
   }
 
   // Admin: get single user profile
@@ -76,5 +81,16 @@ export class UsersController {
     @Body() dto: UpdateLocationDto,
   ) {
     return this.usersService.updateLocation(user.sub, dto);
+  }
+
+  // Driver goes online or offline
+  // PATCH /users/online
+  @Roles(UserRole.DRIVER)
+  @Patch('online')
+  updateOnlineStatus(
+    @CurrentUser() user: any,
+    @Body('isOnline') isOnline: boolean,
+  ) {
+    return this.usersService.updateOnlineStatus(user.sub, isOnline);
   }
 }
