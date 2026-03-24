@@ -8,20 +8,25 @@ import { LocationsService } from './locations.service';
 
 @Controller('locations')
 export class LocationsController {
-  constructor(private locationsService: LocationsService) {}
+  constructor(private locationsService: LocationsService) { }
 
   // Public — no auth needed
   // Used on the search screen before and after login
   // GET /locations/search?q=Ikeja
   @Get('search')
-  async search(@Query('q') query: string) {
+  async search(
+    @Query('q') query: string,
+    @Query('biasLat') biasLat?: string,
+    @Query('biasLng') biasLng?: string,
+  ) {
     if (!query || query.trim().length < 2) {
-      throw new BadRequestException(
-        'Search query must be at least 2 characters',
-      );
+      throw new BadRequestException('Search query must be at least 2 characters');
     }
-    return this.locationsService.search(query);
+    const lat = biasLat ? parseFloat(biasLat) : undefined;
+    const lng = biasLng ? parseFloat(biasLng) : undefined;
+    return this.locationsService.search(query, lat, lng);
   }
+
 
   // Public — no auth needed
   // Used when driver sets location or trip records arrival address
@@ -46,24 +51,24 @@ export class LocationsController {
   }
 
   // GET /locations/route?originLat=&originLng=&destLat=&destLng=
-// Called when owner selects both pickup and destination
-// Returns real road distance, estimated time, and fare range
-@Get('route')
-async getRoute(
-  @Query('originLat') originLat: string,
-  @Query('originLng') originLng: string,
-  @Query('destLat') destLat: string,
-  @Query('destLng') destLng: string,
-) {
-  const oLat = parseFloat(originLat);
-  const oLng = parseFloat(originLng);
-  const dLat = parseFloat(destLat);
-  const dLng = parseFloat(destLng);
+  // Called when owner selects both pickup and destination
+  // Returns real road distance, estimated time, and fare range
+  @Get('route')
+  async getRoute(
+    @Query('originLat') originLat: string,
+    @Query('originLng') originLng: string,
+    @Query('destLat') destLat: string,
+    @Query('destLng') destLng: string,
+  ) {
+    const oLat = parseFloat(originLat);
+    const oLng = parseFloat(originLng);
+    const dLat = parseFloat(destLat);
+    const dLng = parseFloat(destLng);
 
-  if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
-    throw new BadRequestException('All coordinates must be valid numbers');
+    if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
+      throw new BadRequestException('All coordinates must be valid numbers');
+    }
+
+    return this.locationsService.getRouteDetails(oLat, oLng, dLat, dLng);
   }
-
-  return this.locationsService.getRouteDetails(oLat, oLng, dLat, dLng);
-}
 }

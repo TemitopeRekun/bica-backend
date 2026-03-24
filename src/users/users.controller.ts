@@ -36,11 +36,13 @@ export class UsersController {
   getAvailableDrivers(
     @Query('pickupLat') pickupLat?: string,
     @Query('pickupLng') pickupLng?: string,
+    @Query('transmission') transmission?: string,
   ) {
     const lat = pickupLat ? parseFloat(pickupLat) : undefined;
     const lng = pickupLng ? parseFloat(pickupLng) : undefined;
-    return this.usersService.getAvailableDrivers(lat, lng);
+    return this.usersService.getAvailableDrivers(lat, lng, transmission);
   }
+
 
   // Admin: get single user profile
   // GET /users/:id

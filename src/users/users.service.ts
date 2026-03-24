@@ -143,6 +143,7 @@ export class UsersService {
   async getAvailableDrivers(
     pickupLat?: number,
     pickupLng?: number,
+    transmission?: string,
   ) {
     // Get all online, approved, unblocked drivers with a location
     const drivers = await this.prisma.user.findMany({
@@ -153,6 +154,11 @@ export class UsersService {
         isOnline: true,
         locationLat: { not: null },
         locationLng: { not: null },
+        ...(transmission === 'Manual'
+          ? { transmission: 'Manual' }
+          : transmission === 'Automatic'
+            ? { OR: [{ transmission: 'Automatic' }, { transmission: null }] }
+            : {}),
       },
       select: {
         id: true,
