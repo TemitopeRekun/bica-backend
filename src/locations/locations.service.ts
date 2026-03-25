@@ -67,15 +67,17 @@ export class LocationsService {
           params: {
             input: query,
             key: apiKey,
-            // Use pickup coords as bias if provided (category tap from destination field),
-            // otherwise fall back to Lagos city center
-            location: biasLat && biasLng
-              ? `${biasLat},${biasLng}`
-              : `${this.LAGOS_LAT},${this.LAGOS_LNG}`,
-            radius: this.LAGOS_RADIUS,
             components: 'country:ng',
-            types: 'geocode|establishment',
             language: 'en',
+            types: 'geocode|establishment',
+            // Use locationbias with a 5km circle around pickup if provided
+            // Otherwise fall back to Lagos center
+            ...(biasLat && biasLng
+              ? { locationbias: `circle:5000@${biasLat},${biasLng}` }
+              : {
+                location: `${this.LAGOS_LAT},${this.LAGOS_LNG}`,
+                radius: this.LAGOS_RADIUS,
+              }),
           },
         },
       );

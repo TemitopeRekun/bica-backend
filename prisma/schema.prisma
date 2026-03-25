@@ -62,6 +62,8 @@ model User {
   isBlocked        Boolean         @default(false)
   isOnline         Boolean         @default(false)
   carType          String?
+  carModel         String?
+  carYear          String?
   gender           String?
   address          String?
   nationality      String?

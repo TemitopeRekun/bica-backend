@@ -61,6 +61,8 @@ export class AuthService {
         role: dto.role,
         approvalStatus,
         carType: dto.carType,
+        carModel: dto.carModel,
+        carYear: dto.carYear,
         gender: dto.gender,
         address: dto.address,
         nationality: dto.nationality,

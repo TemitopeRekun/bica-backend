@@ -34,6 +34,14 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
+  carModel?: string;
+
+  @IsOptional()
+  @IsString()
+  carYear?: string;
+
+  @IsOptional()
+  @IsString()
   gender?: string;
 
   @IsOptional()
@@ -58,20 +66,20 @@ export class RegisterDto {
   transmission?: string;
 
   // Bank details — required for drivers
-@IsOptional()
-@IsString()
-bankName?: string;
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 
-@IsOptional()
-@IsString()
-bankCode?: string;
+  @IsOptional()
+  @IsString()
+  bankCode?: string;
 
-@IsOptional()
-@IsString()
-accountNumber?: string;
+  @IsOptional()
+  @IsString()
+  accountNumber?: string;
 
-@IsOptional()
-@IsString()
-accountName?: string;
+  @IsOptional()
+  @IsString()
+  accountName?: string;
 
 }
