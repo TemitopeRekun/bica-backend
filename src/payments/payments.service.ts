@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MonnifyService } from './monnify.service';
 import { ConfigService } from '@nestjs/config';
+import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 
 @Injectable()
 export class PaymentsService {
@@ -17,9 +18,10 @@ export class PaymentsService {
     private prisma: PrismaService,
     private monnify: MonnifyService,
     private config: ConfigService,
+    private adminRealtimeGateway: AdminRealtimeGateway,
   ) {}
 
-  // ─── CREATE MONNIFY SUB ACCOUNT ───────────────────────────────────
+  // â”€â”€â”€ CREATE MONNIFY SUB ACCOUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Called async after driver registration
   // Stores subAccountCode on User record
 
@@ -37,19 +39,15 @@ export class PaymentsService {
     });
 
     if (!driver) return;
-
-    // Skip if sub account already exists
     if (driver.monnifySubAccountCode) return;
-
-    // Skip if bank details are missing
     if (!driver.bankCode || !driver.accountNumber) return;
 
     try {
       const subAccountCode = await this.monnify.createSubAccount({
         name: driver.name,
         email: driver.email,
-        bankCode: driver.bankCode!,
-        accountNumber: driver.accountNumber!,
+        bankCode: driver.bankCode,
+        accountNumber: driver.accountNumber,
       });
 
       await this.prisma.user.update({
@@ -59,8 +57,6 @@ export class PaymentsService {
 
       this.logger.log(`Sub account created and stored for driver ${driverId}`);
     } catch (error) {
-      // Log but don't throw — registration already succeeded
-      // Admin can manually trigger sub account creation later
       this.logger.error(
         `Failed to create sub account for driver ${driverId}`,
         error,
@@ -68,7 +64,7 @@ export class PaymentsService {
     }
   }
 
-  // ─── INITIATE PAYMENT ─────────────────────────────────────────────
+  // â”€â”€â”€ INITIATE PAYMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Called after trip is COMPLETED
   // Generates Monnify checkout URL for owner to pay
 
@@ -95,38 +91,32 @@ export class PaymentsService {
 
     if (!trip) throw new NotFoundException('Trip not found');
 
-    // Only the owner of this trip can initiate payment
     if (trip.ownerId !== requestingUserId) {
       throw new ForbiddenException('Only the trip owner can initiate payment');
     }
 
-    // Trip must be completed before payment
     if (trip.status !== 'COMPLETED') {
       throw new BadRequestException(
         'Payment can only be initiated for completed trips',
       );
     }
 
-    // Don't allow duplicate payment initiation
     if (trip.paymentStatus === 'PAID') {
       throw new BadRequestException('This trip has already been paid for');
     }
 
-    // Driver must have a Monnify sub account
     if (!trip.driver?.monnifySubAccountCode) {
       throw new BadRequestException(
         'Driver payment account not configured. Please contact support.',
       );
     }
 
-    // Get commission percentage from system settings
     const settings = await this.prisma.systemSettings.findUnique({
       where: { id: 1 },
     });
 
     const driverSplitPercent = 100 - (settings?.commission ?? 25);
 
-    // Initiate transaction with Monnify
     const { checkoutUrl, transactionReference } =
       await this.monnify.initiateTransaction({
         amount: trip.amount,
@@ -137,7 +127,6 @@ export class PaymentsService {
         driverSplitPercent,
       });
 
-    // Store transaction reference on trip
     await this.prisma.trip.update({
       where: { id: tripId },
       data: {
@@ -146,16 +135,27 @@ export class PaymentsService {
       },
     });
 
-    return {
+    const response = {
       checkoutUrl,
       transactionReference,
       amount: trip.amount,
       driverEarnings: trip.driverEarnings,
       platformEarnings: trip.commissionAmount,
     };
+
+    this.adminRealtimeGateway.notifyPaymentUpdated('initiated', {
+      tripId,
+      transactionReference,
+      amount: trip.amount,
+      paymentStatus: 'PENDING',
+      ownerId: trip.ownerId,
+      driverId: trip.driverId,
+    });
+
+    return response;
   }
 
-  // ─── PROCESS WEBHOOK ──────────────────────────────────────────────
+  // â”€â”€â”€ PROCESS WEBHOOK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Monnify calls this when payment is confirmed
   // Security: verify signature, check idempotency, verify with API
 
@@ -164,14 +164,12 @@ export class PaymentsService {
     signature: string,
     payload: any,
   ): Promise<void> {
-    // 1. Verify webhook signature immediately
     const isValid = this.monnify.verifyWebhookSignature(rawBody, signature);
     if (!isValid) {
       this.logger.warn('Rejected webhook with invalid signature');
-      return; // Return silently — don't give attacker info
+      return;
     }
 
-    // 2. Only process successful payment events
     if (payload.eventType !== 'SUCCESSFUL_TRANSACTION') {
       this.logger.log(`Ignoring webhook event: ${payload.eventType}`);
       return;
@@ -180,7 +178,6 @@ export class PaymentsService {
     const eventData = payload.eventData;
     const txRef = eventData.transactionReference;
 
-    // 3. Find the trip by transaction reference
     const trip = await this.prisma.trip.findFirst({
       where: { monnifyTxRef: txRef },
       include: {
@@ -195,13 +192,11 @@ export class PaymentsService {
       return;
     }
 
-    // 4. Idempotency check — don't process same payment twice
     if (trip.paymentStatus === 'PAID') {
       this.logger.log(`Duplicate webhook ignored for trip ${trip.id}`);
       return;
     }
 
-    // 5. Verify payment with Monnify API independently
     const verification = await this.monnify.verifyTransaction(txRef);
     if (!verification.paid) {
       this.logger.warn(`Payment verification failed for trip ${trip.id}`);
@@ -209,12 +204,17 @@ export class PaymentsService {
         where: { id: trip.id },
         data: { paymentStatus: 'FAILED' },
       });
+
+      this.adminRealtimeGateway.notifyPaymentUpdated('failed', {
+        tripId: trip.id,
+        transactionReference: txRef,
+        paymentStatus: 'FAILED',
+        driverId: trip.driverId,
+      });
       return;
     }
 
-    // 6. Mark trip as paid and record full audit trail
     await this.prisma.$transaction([
-      // Update trip payment status
       this.prisma.trip.update({
         where: { id: trip.id },
         data: {
@@ -222,8 +222,6 @@ export class PaymentsService {
           paidAt: new Date(),
         },
       }),
-
-      // Create immutable payment record for audit
       this.prisma.paymentRecord.create({
         data: {
           tripId: trip.id,
@@ -236,8 +234,6 @@ export class PaymentsService {
           webhookPayload: payload,
         },
       }),
-
-      // Increment driver earnings ledger
       this.prisma.user.update({
         where: { id: trip.driverId! },
         data: {
@@ -247,11 +243,20 @@ export class PaymentsService {
     ]);
 
     this.logger.log(
-      `Payment processed for trip ${trip.id} — ₦${verification.amount}`,
+      `Payment processed for trip ${trip.id} â€” â‚¦${verification.amount}`,
     );
+
+    this.adminRealtimeGateway.notifyPaymentUpdated('paid', {
+      tripId: trip.id,
+      transactionReference: txRef,
+      amount: verification.amount,
+      paymentMethod: verification.paymentMethod,
+      paymentStatus: 'PAID',
+      driverId: trip.driverId,
+    });
   }
 
-  // ─── WALLET SUMMARY ───────────────────────────────────────────────
+  // â”€â”€â”€ WALLET SUMMARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getWalletSummary(driverId: string) {
     const driver = await this.prisma.user.findUnique({
@@ -268,13 +273,11 @@ export class PaymentsService {
 
     if (!driver) throw new NotFoundException('Driver not found');
 
-    // Total lifetime earnings from completed paid trips
     const totalEarned = await this.prisma.trip.aggregate({
       where: { driverId, status: 'COMPLETED', paymentStatus: 'PAID' },
       _sum: { driverEarnings: true },
     });
 
-    // Recent payment records
     const recentPayments = await this.prisma.paymentRecord.findMany({
       where: { trip: { driverId } },
       orderBy: { paidAt: 'desc' },
@@ -302,12 +305,11 @@ export class PaymentsService {
     };
   }
 
-  // ─── MONTHLY WALLET RESET ─────────────────────────────────────────
+  // â”€â”€â”€ MONTHLY WALLET RESET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Archives current balance to history then resets to 0
   // Called by admin or scheduled job on first day of each month
 
   async resetWallets(adminId: string) {
-    // Get all drivers with non-zero balance
     const drivers = await this.prisma.user.findMany({
       where: {
         role: 'DRIVER',
@@ -320,7 +322,6 @@ export class PaymentsService {
       return { message: 'No wallets to reset', count: 0 };
     }
 
-    // Reset all balances to 0 in a single transaction
     await this.prisma.user.updateMany({
       where: {
         role: 'DRIVER',
@@ -330,7 +331,7 @@ export class PaymentsService {
     });
 
     this.logger.log(
-      `Monthly wallet reset by admin ${adminId} — ${drivers.length} drivers reset`,
+      `Monthly wallet reset by admin ${adminId} â€” ${drivers.length} drivers reset`,
     );
 
     return {
@@ -344,7 +345,7 @@ export class PaymentsService {
     };
   }
 
-  // ─── PAYMENT HISTORY ──────────────────────────────────────────────
+  // â”€â”€â”€ PAYMENT HISTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getPaymentHistory(userId: string, role: string) {
     const where =
@@ -372,7 +373,7 @@ export class PaymentsService {
     });
   }
 
-  // ─── ADMIN: GET ALL PENDING PAYMENTS ──────────────────────────────
+  // â”€â”€â”€ ADMIN: GET ALL PENDING PAYMENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getPendingPayments() {
     return this.prisma.trip.findMany({

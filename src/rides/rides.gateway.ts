@@ -8,6 +8,7 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { PrismaService } from '../prisma/prisma.service';
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -15,6 +16,8 @@ import { Server, Socket } from 'socket.io';
 })
 export class RidesGateway
   implements OnGatewayConnection, OnGatewayDisconnect {
+  constructor(private prisma: PrismaService) {}
+
   @WebSocketServer()
   server: Server;
 
@@ -29,6 +32,7 @@ export class RidesGateway
     for (const [driverId, socketId] of this.driverSockets.entries()) {
       if (socketId === client.id) {
         this.driverSockets.delete(driverId);
+        console.log(`Driver ${driverId} disconnected socket ${client.id}`);
         break;
       }
     }
@@ -36,6 +40,7 @@ export class RidesGateway
     for (const [ownerId, socketId] of this.ownerSockets.entries()) {
       if (socketId === client.id) {
         this.ownerSockets.delete(ownerId);
+        console.log(`Owner ${ownerId} disconnected socket ${client.id}`);
         break;
       }
     }
@@ -61,9 +66,17 @@ export class RidesGateway
   }
 
   @SubscribeMessage('driver:location')
-  handleLocationUpdate(
+  async handleLocationUpdate(
     @MessageBody() data: { driverId: string; lat: number; lng: number },
   ) {
+    await this.prisma.user.update({
+      where: { id: data.driverId },
+      data: {
+        locationLat: data.lat,
+        locationLng: data.lng,
+      },
+    });
+
     this.server.to(`driver:${data.driverId}`).emit('location:updated', {
       driverId: data.driverId,
       lat: data.lat,
@@ -86,6 +99,33 @@ export class RidesGateway
     if (socketId) {
       this.server.to(socketId).emit('ride:assigned', trip);
     }
+  }
+
+  notifyDriverAvailabilityChanged(
+    driverId: string,
+    isOnline: boolean,
+    payload?: Record<string, unknown>,
+  ) {
+    const socketId = this.driverSockets.get(driverId);
+    const event = isOnline ? 'driver:online' : 'driver:offline';
+
+    console.log(`Driver ${driverId} marked ${isOnline ? 'online' : 'offline'}`);
+
+    if (socketId) {
+      this.server.to(socketId).emit(event, {
+        driverId,
+        isOnline,
+        timestamp: new Date().toISOString(),
+        ...payload,
+      });
+    }
+
+    this.server.emit('driver:availability', {
+      driverId,
+      isOnline,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    });
   }
 
   // Notify owner that driver accepted

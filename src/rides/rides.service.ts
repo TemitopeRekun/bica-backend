@@ -9,12 +9,14 @@ import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { TripStatus, UserRole } from '@prisma/client';
 import { RidesGateway } from './rides.gateway';
+import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 
 @Injectable()
 export class RidesService {
   constructor(
     private prisma: PrismaService,
     private gateway: RidesGateway,
+    private adminRealtimeGateway: AdminRealtimeGateway,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -23,12 +25,13 @@ export class RidesService {
 
   private calculateEstimatedFare(
     distanceKm: number,
-    settings: { baseFare: number; pricePerKm: number },
+    estimatedMins: number,
+    settings: { baseFare: number; pricePerKm: number; timeRate: number },
   ): number {
-    if (distanceKm <= 4.5) {
-      return 2000; // flat rate for short trips
-    }
-    const price = settings.baseFare + distanceKm * settings.pricePerKm;
+    const price =
+      settings.baseFare +
+      distanceKm * settings.pricePerKm +
+      estimatedMins * settings.timeRate;
     return Math.round(price / 50) * 50;
   }
 
@@ -72,6 +75,7 @@ export class RidesService {
       estimatedArrivalMins: 5, // could calculate this properly
     });
 
+    this.adminRealtimeGateway.notifyTripUpdated('accepted', updated);
     return updated;
   }
 
@@ -107,6 +111,10 @@ export class RidesService {
       message: 'Driver declined the request. Please select another driver.',
     });
 
+    this.adminRealtimeGateway.notifyTripUpdated('declined', {
+      tripId,
+      driverId,
+    });
     return { message: 'Ride declined successfully' };
   }
 
@@ -139,6 +147,13 @@ export class RidesService {
           message: 'Driver did not respond. Please select another driver.',
         });
 
+        this.adminRealtimeGateway.notifyTripUpdated('timed_out', {
+          tripId,
+          driverId,
+          ownerId,
+          status: TripStatus.DECLINED,
+        });
+
         console.log(`Trip ${tripId} auto-declined after 60s timeout`);
       }
 
@@ -158,42 +173,32 @@ export class RidesService {
 
   // ─── FINAL FARE ENGINE ───────────────────────────────────────────
   // Called at COMPLETION time with actual elapsed minutes
-  // extraMins = max(0, actualMins - estimatedMins)
-  // Surcharge = extraMins × timeRate
+  // Final fare = base fare + distance component + total elapsed minutes component
 
   private calculateFinalFare(
     distanceKm: number,
-    estimatedMins: number,
     actualMins: number,
     settings: { baseFare: number; pricePerKm: number; timeRate: number },
   ): {
     finalFare: number;
+    baseFare: number;
     distanceComponent: number;
     timeComponent: number;
-    extraMins: number;
+    totalMins: number;
   } {
-    const extraMins = Math.max(0, actualMins - estimatedMins);
-    const timeComponent = extraMins * settings.timeRate;
-
-    let baseFare: number;
-    let distanceComponent: number;
-
-    if (distanceKm <= 4.5) {
-      baseFare = 2000;
-      distanceComponent = 0; // flat rate, no separate distance component
-    } else {
-      baseFare = settings.baseFare;
-      distanceComponent = distanceKm * settings.pricePerKm;
-    }
+    const baseFare = settings.baseFare;
+    const distanceComponent = distanceKm * settings.pricePerKm;
+    const timeComponent = actualMins * settings.timeRate;
 
     const rawFare = baseFare + distanceComponent + timeComponent;
     const finalFare = Math.round(rawFare / 50) * 50;
 
     return {
       finalFare,
+      baseFare: Math.round(baseFare),
       distanceComponent: Math.round(distanceComponent),
       timeComponent: Math.round(timeComponent),
-      extraMins,
+      totalMins: actualMins,
     };
   }
 
@@ -240,6 +245,7 @@ export class RidesService {
         role: UserRole.DRIVER,
         approvalStatus: 'APPROVED',
         isBlocked: false,
+        isOnline: true,
         locationLat: { not: null },
         locationLng: { not: null },
       },
@@ -323,7 +329,12 @@ export class RidesService {
       );
     }
 
-    const amount = this.calculateEstimatedFare(dto.distanceKm, settings);
+    const estimatedMins = dto.estimatedMins ?? 0;
+    const amount = this.calculateEstimatedFare(
+      dto.distanceKm,
+      estimatedMins,
+      settings,
+    );
     const { commissionAmount, driverEarnings } = this.calculateSplit(
       amount,
       settings.commission,
@@ -373,10 +384,13 @@ export class RidesService {
     // Start 60 second auto-decline timer
     this.startAcceptanceTimer(trip.id, ownerId, dto.driverId);
 
-    return {
+    const response = {
       ...trip,
       estimatedArrivalMins: null,
     };
+
+    this.adminRealtimeGateway.notifyTripUpdated('created', response);
+    return response;
   }
 
   // ─── GET SINGLE TRIP ─────────────────────────────────────────────
@@ -448,12 +462,9 @@ export class RidesService {
         (updateData.completedAt.getTime() - startedAt.getTime()) / 60000,
       );
 
-      const estimatedMins = trip.estimatedMins ?? actualMins;
-
-      const { finalFare, distanceComponent, timeComponent, extraMins } =
+      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } =
         this.calculateFinalFare(
           trip.distanceKm,
-          estimatedMins,
           actualMins,
           settings!,
         );
@@ -471,11 +482,12 @@ export class RidesService {
 
       // Attach breakdown for response transparency
       updateData.fareBreakdown = {
+        baseFare,
         distanceKm: trip.distanceKm,
         distanceComponent,
         timeComponent,
-        extraMins,
-        estimatedMins,
+        totalMins,
+        estimatedMins: trip.estimatedMins ?? null,
         actualMins,
         finalFare,
         driverEarnings,
@@ -486,7 +498,6 @@ export class RidesService {
         await this.prisma.user.update({
           where: { id: trip.driverId },
           data: {
-            walletBalance: { increment: driverEarnings },
             totalTrips: { increment: 1 },
           },
         });
@@ -528,10 +539,13 @@ export class RidesService {
     });
 
     // Attach fare breakdown to response so frontend can display it
-    return {
+    const response = {
       ...updated,
       fareBreakdown: fareBreakdown ?? null,
     };
+
+    this.adminRealtimeGateway.notifyTripUpdated('status_changed', response);
+    return response;
   }
 
   // ─── STATUS TRANSITION RULES ─────────────────────────────────────

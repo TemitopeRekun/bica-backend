@@ -2,15 +2,24 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { UserRole } from '@prisma/client';
+import { RidesGateway } from '../rides/rides.gateway';
+import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) { }
+  private readonly logger = new Logger(UsersService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private ridesGateway: RidesGateway,
+    private adminRealtimeGateway: AdminRealtimeGateway,
+  ) { }
 
   // Get all users — admin only, with optional role filter
   async findAll(role?: UserRole) {
@@ -97,20 +106,31 @@ export class UsersService {
       throw new ForbiddenException('Approval status only applies to drivers');
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       data: { approvalStatus: dto.approvalStatus },
       select: { id: true, name: true, approvalStatus: true },
     });
+
+    this.adminRealtimeGateway.notifyUserUpdated('approval_changed', updated);
+    return updated;
   }
 
   // Driver toggles online/offline status
   async updateOnlineStatus(id: string, isOnline: boolean) {
-    return this.prisma.user.update({
+    const user = await this.prisma.user.update({
       where: { id },
       data: { isOnline },
-      select: { id: true, name: true, isOnline: true },
+      select: { id: true, name: true, isOnline: true, locationLat: true, locationLng: true },
     });
+
+    this.logger.log(`Driver ${id} toggled ${isOnline ? 'online' : 'offline'}`);
+    this.ridesGateway.notifyDriverAvailabilityChanged(id, isOnline, {
+      locationLat: user.locationLat,
+      locationLng: user.locationLng,
+    });
+
+    return user;
   }
 
   // Admin: block or unblock any user
@@ -119,11 +139,14 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found');
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       data: { isBlocked },
-      select: { id: true, name: true, isBlocked: true },
+      select: { id: true, name: true, isBlocked: true, role: true },
     });
+
+    this.adminRealtimeGateway.notifyUserUpdated('block_changed', updated);
+    return updated;
   }
 
   // Driver: update live GPS location
@@ -155,9 +178,15 @@ export class UsersService {
         locationLat: { not: null },
         locationLng: { not: null },
         ...(transmission === 'Manual'
-          ? { transmission: 'Manual' }
+          ? { OR: [{ transmission: 'Manual' }, { transmission: 'Both' }] }
           : transmission === 'Automatic'
-            ? { OR: [{ transmission: 'Automatic' }, { transmission: null }] }
+            ? {
+              OR: [
+                { transmission: 'Automatic' },
+                { transmission: 'Both' },
+                { transmission: null },
+              ],
+            }
             : {}),
       },
       select: {
@@ -187,7 +216,7 @@ export class UsersService {
     );
 
     // If pickup coords provided, calculate distance and sort by nearest
-    if (pickupLat && pickupLng) {
+    if (pickupLat !== undefined && pickupLng !== undefined) {
       const withDistance = available.map((driver) => {
         const distanceKm = this.calculateDistance(
           pickupLat,

@@ -47,18 +47,6 @@ export class CreateRideDto {
 
   @IsOptional()
   @IsString()
-  vehicleMake?: string;
-
-  @IsOptional()
-  @IsString()
-  vehicleModel?: string;
-
-  @IsOptional()
-  @IsString()
-  vehicleYear?: string;
-
-  @IsOptional()
-  @IsString()
   transmission?: string;
 
   // Driver selected by owner from the list

@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PaymentsModule } from '../payments/payments.module';
+import { AdminRealtimeModule } from '../admin/admin-realtime.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PaymentsModule } from '../payments/payments.module';
       }),
     }),
     forwardRef(() => PaymentsModule),
+    AdminRealtimeModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, AuthGuard],

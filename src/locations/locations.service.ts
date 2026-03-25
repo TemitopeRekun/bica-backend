@@ -26,6 +26,28 @@ export class LocationsService {
   // Cache TTLs
   private readonly SEARCH_TTL = 86400;    // 24 hours for search results
   private readonly REVERSE_TTL = 604800;  // 7 days for reverse geocoding
+  private readonly CATEGORY_KEYWORDS = new Set([
+    'airport',
+    'airports',
+    'hotel',
+    'hotels',
+    'hospital',
+    'hospitals',
+    'mall',
+    'malls',
+    'shopping mall',
+    'shopping malls',
+    'restaurant',
+    'restaurants',
+    'school',
+    'schools',
+    'university',
+    'universities',
+    'bus stop',
+    'bus stops',
+    'bus station',
+    'bus stations',
+  ]);
 
   constructor(
     private config: ConfigService,
@@ -57,7 +79,23 @@ export class LocationsService {
       return cached;
     }
 
-    // 2. Call Google Places Autocomplete API
+    // 2. Category searches behave better with nearby text search than autocomplete.
+    if (this.isCategorySearch(normalizedQuery)) {
+      const nearbyResults = await this.searchNearbyCategory(
+        query,
+        normalizedQuery,
+        biasLat,
+        biasLng,
+      );
+
+      if (nearbyResults.length > 0) {
+        await this.redis.set(cacheKey, nearbyResults, this.SEARCH_TTL);
+        this.logger.log(`Cached ${nearbyResults.length} nearby results for: "${query}"`);
+        return nearbyResults;
+      }
+    }
+
+    // 3. Call Google Places Autocomplete API
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
 
     try {
@@ -83,14 +121,16 @@ export class LocationsService {
       );
 
       this.logger.log(`Google response status: ${response.data.status}`);
-      this.logger.log(`Google error message: ${response.data.error_message}`);
+      if (response.data.error_message) {
+        this.logger.warn(`Google error message: ${response.data.error_message}`);
+      }
 
       if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
         this.logger.error(`Google Places error: ${response.data.status} - ${response.data.error_message}`);
         return [];
       }
 
-      // 3. Transform Google's response to our LocationResult shape
+      // 4. Transform Google's response to our LocationResult shape
       const predictions = response.data.predictions.slice(0, 8);
       const results: LocationResult[] = await Promise.all(
         predictions.map(async (prediction: any) => {
@@ -110,7 +150,7 @@ export class LocationsService {
         }),
       );
 
-      // 4. Cache results for 24 hours
+      // 5. Cache results for 24 hours
       await this.redis.set(cacheKey, results, this.SEARCH_TTL);
       this.logger.log(`Cached ${results.length} results for: "${query}"`);
 
@@ -250,6 +290,58 @@ export class LocationsService {
     }
   }
 
+  private isCategorySearch(query: string): boolean {
+    return this.CATEGORY_KEYWORDS.has(query);
+  }
+
+  private async searchNearbyCategory(
+    query: string,
+    normalizedQuery: string,
+    biasLat?: number,
+    biasLng?: number,
+  ): Promise<LocationResult[]> {
+    const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+
+    try {
+      const response = await axios.get(
+        `${this.googleBaseUrl}/place/textsearch/json`,
+        {
+          params: {
+            query,
+            key: apiKey,
+            language: 'en',
+            region: 'ng',
+            location: `${biasLat ?? this.LAGOS_LAT},${biasLng ?? this.LAGOS_LNG}`,
+            radius: biasLat !== undefined && biasLng !== undefined ? 5000 : this.LAGOS_RADIUS,
+          },
+        },
+      );
+
+      this.logger.log(`Google nearby category status: ${response.data.status}`);
+      if (
+        response.data.status !== 'OK' &&
+        response.data.status !== 'ZERO_RESULTS'
+      ) {
+        this.logger.error(
+          `Google nearby category error for "${normalizedQuery}": ${response.data.status} - ${response.data.error_message}`,
+        );
+        return [];
+      }
+
+      return (response.data.results ?? []).slice(0, 8).map((result: any) => ({
+        id: result.place_id,
+        display_name: result.name,
+        description: result.formatted_address ?? result.vicinity ?? result.name,
+        lat: result.geometry?.location?.lat ?? this.LAGOS_LAT,
+        lon: result.geometry?.location?.lng ?? this.LAGOS_LNG,
+        category: this.inferCategory(result.types ?? []),
+      }));
+    } catch (error: any) {
+      this.logger.error(`Nearby category search failed for "${query}": ${error.message}`);
+      return [];
+    }
+  }
+
   // ─── HELPERS ──────────────────────────────────────────────────────
 
   private getComponent(
@@ -333,7 +425,11 @@ export class LocationsService {
         (element.duration_in_traffic?.value ?? element.duration.value) / 60,
       );
 
-      const fareEstimate = this.calculateFareRange(distanceKm, currentTrafficMins);
+      const fareEstimate = this.calculateFareRange(
+        distanceKm,
+        estimatedMins,
+        currentTrafficMins,
+      );
 
       const result = {
         distanceKm: Math.round(distanceKm * 10) / 10, // 1 decimal place
@@ -356,42 +452,26 @@ export class LocationsService {
   }
 
   // ─── FARE RANGE CALCULATOR ────────────────────────────────────────
-  // Low  = distance only (no traffic surcharge)
-  // High = distance + current traffic extra time
+  // Low  = base + distance + base duration time
+  // High = base + distance + traffic duration time
 
   private calculateFareRange(
     distanceKm: number,
+    estimatedMins: number,
     currentTrafficMins: number,
   ): { low: number; high: number } {
     const BASE_FARE = 500;
     const RATE_PER_KM = 100;
     const RATE_PER_MIN = 50;
-    const SHORT_TRIP_FLAT = 2000;
-    const SHORT_TRIP_KM = 4.5;
-
-    if (distanceKm <= SHORT_TRIP_KM) {
-      // Short trip — flat ₦2,000 base, surcharge only if traffic adds extra time
-      // We use current traffic as estimate — if no extra time, just flat rate
-      const low = SHORT_TRIP_FLAT;
-      // High = flat + potential traffic surcharge
-      // We don't know exact estimate yet (that's stored per trip)
-      // So high = flat + (currentTrafficMins × 0.3 × RATE_PER_MIN) as rough upper bound
-      const high = Math.round(
-        (SHORT_TRIP_FLAT + currentTrafficMins * 0.3 * RATE_PER_MIN) / 50,
-      ) * 50;
-      return { low, high: Math.max(low, high) };
-    }
-
-    // Standard trip
     const baseFare = BASE_FARE + distanceKm * RATE_PER_KM;
-    const low = Math.round(baseFare / 50) * 50;
-    // High = base fare + extra time if current traffic is worse than base
-    // Use currentTrafficMins as the worst case time component
+    const low = Math.round(
+      (baseFare + estimatedMins * RATE_PER_MIN) / 50,
+    ) * 50;
     const high = Math.round(
       (baseFare + currentTrafficMins * RATE_PER_MIN) / 50,
     ) * 50;
 
-    return { low, high };
+    return { low, high: Math.max(low, high) };
   }
 
   // ─── HAVERSINE FALLBACK ───────────────────────────────────────────
@@ -421,14 +501,18 @@ export class LocationsService {
     const distanceKm = Math.round(R * c * 10) / 10;
 
     // Estimate time at 30km/h average Lagos speed
-    const estimatedMins = Math.ceil((distanceKm / 30) * 60);
-    const currentTrafficMins = Math.ceil(estimatedMins * 1.5); // 50% buffer
+      const estimatedMins = Math.ceil((distanceKm / 30) * 60);
+      const currentTrafficMins = Math.ceil(estimatedMins * 1.5); // 50% buffer
 
-    return {
-      distanceKm,
-      estimatedMins,
-      currentTrafficMins,
-      fareEstimate: this.calculateFareRange(distanceKm, currentTrafficMins),
-    };
+      return {
+        distanceKm,
+        estimatedMins,
+        currentTrafficMins,
+        fareEstimate: this.calculateFareRange(
+          distanceKm,
+          estimatedMins,
+          currentTrafficMins,
+        ),
+      };
+    }
   }
-}

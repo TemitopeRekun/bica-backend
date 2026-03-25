@@ -12,6 +12,7 @@ import { LoginDto } from './dto/login.dto';
 import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PaymentsService } from '../payments/payments.service';
+import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 
 
 @Injectable()
@@ -21,6 +22,7 @@ export class AuthService {
     private jwt: JwtService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
+    private adminRealtimeGateway: AdminRealtimeGateway,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -90,12 +92,24 @@ export class AuthService {
 }
 
     // 6. Return token and user (never return passwordHash)
-    return {
+    const response = {
       token,
       user: this.sanitizeUser(user),
     };
 
+    if (user.role === UserRole.DRIVER) {
+      this.adminRealtimeGateway.notifyPendingDriver({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        approvalStatus: user.approvalStatus,
+        createdAt: user.createdAt,
+      });
+    }
 
+    return response;
   }
 
   async login(dto: LoginDto) {
