@@ -151,4 +151,11 @@ export class RidesGateway
       this.server.to(socketId).emit('trip:completed', data);
     }
   }
+
+  notifyOwnerPaymentUpdated(ownerId: string, data: any) {
+    const socketId = this.ownerSockets.get(ownerId);
+    if (socketId) {
+      this.server.to(socketId).emit('payment:updated', data);
+    }
+  }
 }

@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEmail,
   IsEnum,
   IsNotEmpty,
@@ -65,7 +66,23 @@ export class RegisterDto {
   @IsString()
   transmission?: string;
 
-  // Bank details — required for drivers
+  @IsOptional()
+  @IsString()
+  licenseImageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  ninImageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  selfieImageUrl?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  backgroundCheckAccepted?: boolean;
+
+  // Bank details - required for drivers
   @IsOptional()
   @IsString()
   bankName?: string;
@@ -81,5 +98,4 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   accountName?: string;
-
 }

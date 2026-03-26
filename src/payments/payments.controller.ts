@@ -61,6 +61,17 @@ async handleWebhook(
     return this.paymentsService.initiatePayment(tripId, user.sub);
   }
 
+  // Owner, driver, or admin checks the latest payment state for a trip
+  // GET /payments/status/:tripId
+  @UseGuards(AuthGuard)
+  @Get('status/:tripId')
+  getPaymentStatus(
+    @Param('tripId') tripId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.paymentsService.getPaymentStatus(tripId, user.sub, user.role);
+  }
+
   // Driver views wallet summary and earnings
   // GET /payments/wallet
   @UseGuards(AuthGuard, RolesGuard)

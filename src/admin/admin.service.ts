@@ -49,6 +49,7 @@ export class AdminService {
         licenseImageUrl: true,
         ninImageUrl: true,
         selfieImageUrl: true,
+        backgroundCheckAccepted: true,
         walletBalance: true,
         locationLat: true,
         locationLng: true,

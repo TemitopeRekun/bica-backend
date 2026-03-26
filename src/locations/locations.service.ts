@@ -1,9 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { RedisService } from '../redis/redis.service';
 import axios from 'axios';
+import { RedisService } from '../redis/redis.service';
 
-// Shape that matches what the frontend LocationService expects
 export interface LocationResult {
   id: string;
   display_name: string;
@@ -11,21 +10,46 @@ export interface LocationResult {
   lat: number;
   lon: number;
   category: string;
+  formatted_address?: string;
+  street_number?: string | null;
+  street?: string | null;
+  area?: string | null;
+  city?: string | null;
+  lga?: string | null;
+  state?: string | null;
+  country?: string | null;
+  place_types?: string[];
 }
+
+type GooglePlace = {
+  place_id?: string;
+  name?: string;
+  formatted_address?: string;
+  vicinity?: string;
+  geometry?: {
+    location?: {
+      lat?: number;
+      lng?: number;
+    };
+  };
+  address_components?: Array<{
+    long_name: string;
+    short_name: string;
+    types: string[];
+  }>;
+  types?: string[];
+};
 
 @Injectable()
 export class LocationsService {
   private readonly logger = new Logger(LocationsService.name);
   private readonly googleBaseUrl = 'https://maps.googleapis.com/maps/api';
-
-  // Lagos bias coordinates and radius
   private readonly LAGOS_LAT = 6.5244;
   private readonly LAGOS_LNG = 3.3792;
-  private readonly LAGOS_RADIUS = 50000; // 50km radius covers all of Lagos
-
-  // Cache TTLs
-  private readonly SEARCH_TTL = 86400;    // 24 hours for search results
-  private readonly REVERSE_TTL = 604800;  // 7 days for reverse geocoding
+  private readonly LAGOS_RADIUS = 50000;
+  private readonly SEARCH_TTL = 86400;
+  private readonly REVERSE_TTL = 604800;
+  private readonly PLACE_DETAILS_TTL = 2592000;
   private readonly CATEGORY_KEYWORDS = new Set([
     'airport',
     'airports',
@@ -52,12 +76,7 @@ export class LocationsService {
   constructor(
     private config: ConfigService,
     private redis: RedisService,
-  ) { }
-
-
-  // ─── AUTOCOMPLETE SEARCH ──────────────────────────────────────────
-  // Called when user types in the location search box
-  // Returns top 8 matching Lagos locations
+  ) {}
 
   async search(
     query: string,
@@ -67,19 +86,18 @@ export class LocationsService {
     if (!query || query.trim().length < 2) return [];
 
     const normalizedQuery = query.trim().toLowerCase();
-    const biasKey = biasLat && biasLng
+    const hasBias = biasLat !== undefined && biasLng !== undefined;
+    const biasKey = hasBias
       ? `:${biasLat.toFixed(3)},${biasLng.toFixed(3)}`
       : '';
     const cacheKey = `location:search:${normalizedQuery}${biasKey}`;
 
-    // 1. Check Redis cache first
     const cached = await this.redis.get<LocationResult[]>(cacheKey);
     if (cached) {
       this.logger.log(`Cache hit for search: "${query}"`);
       return cached;
     }
 
-    // 2. Category searches behave better with nearby text search than autocomplete.
     if (this.isCategorySearch(normalizedQuery)) {
       const nearbyResults = await this.searchNearbyCategory(
         query,
@@ -90,12 +108,13 @@ export class LocationsService {
 
       if (nearbyResults.length > 0) {
         await this.redis.set(cacheKey, nearbyResults, this.SEARCH_TTL);
-        this.logger.log(`Cached ${nearbyResults.length} nearby results for: "${query}"`);
+        this.logger.log(
+          `Cached ${nearbyResults.length} nearby results for: "${query}"`,
+        );
         return nearbyResults;
       }
     }
 
-    // 3. Call Google Places Autocomplete API
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
 
     try {
@@ -108,14 +127,12 @@ export class LocationsService {
             components: 'country:ng',
             language: 'en',
             types: 'geocode|establishment',
-            // Use locationbias with a 5km circle around pickup if provided
-            // Otherwise fall back to Lagos center
-            ...(biasLat && biasLng
+            ...(hasBias
               ? { locationbias: `circle:5000@${biasLat},${biasLng}` }
               : {
-                location: `${this.LAGOS_LAT},${this.LAGOS_LNG}`,
-                radius: this.LAGOS_RADIUS,
-              }),
+                  location: `${this.LAGOS_LAT},${this.LAGOS_LNG}`,
+                  radius: this.LAGOS_RADIUS,
+                }),
           },
         },
       );
@@ -126,31 +143,56 @@ export class LocationsService {
       }
 
       if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
-        this.logger.error(`Google Places error: ${response.data.status} - ${response.data.error_message}`);
+        this.logger.error(
+          `Google Places error: ${response.data.status} - ${response.data.error_message}`,
+        );
         return [];
       }
 
-      // 4. Transform Google's response to our LocationResult shape
       const predictions = response.data.predictions.slice(0, 8);
-      const results: LocationResult[] = await Promise.all(
+      const results = await Promise.all(
         predictions.map(async (prediction: any) => {
-          // Get lat/lng for each result via Place Details
-          const coords = await this.getPlaceCoords(prediction.place_id, apiKey!);
+          const placeDetails = await this.getPlaceDetails(
+            prediction.place_id,
+            apiKey!,
+          );
+
+          if (placeDetails) {
+            return this.toLocationResult(placeDetails, {
+              fallbackDisplayName:
+                prediction.structured_formatting?.main_text ||
+                prediction.description,
+              fallbackDescription:
+                prediction.structured_formatting?.secondary_text ||
+                prediction.description,
+              fallbackCategory: this.inferCategory(prediction.types ?? []),
+            });
+          }
 
           return {
             id: prediction.place_id,
-            display_name: prediction.structured_formatting?.main_text ||
+            display_name:
+              prediction.structured_formatting?.main_text ||
               prediction.description,
-            description: prediction.structured_formatting?.secondary_text ||
+            description:
+              prediction.structured_formatting?.secondary_text ||
               prediction.description,
-            lat: coords.lat,
-            lon: coords.lng,
-            category: this.inferCategory(prediction.types),
-          };
+            lat: this.LAGOS_LAT,
+            lon: this.LAGOS_LNG,
+            category: this.inferCategory(prediction.types ?? []),
+            formatted_address: prediction.description,
+            street_number: null,
+            street: null,
+            area: null,
+            city: null,
+            lga: null,
+            state: null,
+            country: 'Nigeria',
+            place_types: prediction.types ?? [],
+          } satisfies LocationResult;
         }),
       );
 
-      // 5. Cache results for 24 hours
       await this.redis.set(cacheKey, results, this.SEARCH_TTL);
       this.logger.log(`Cached ${results.length} results for: "${query}"`);
 
@@ -161,18 +203,10 @@ export class LocationsService {
     }
   }
 
-  // ─── REVERSE GEOCODING ────────────────────────────────────────────
-  // Converts GPS coordinates to a human-readable address
-  // Called when driver arrives — records actual street address on trip
-
-  async reverseGeocode(
-    lat: number,
-    lng: number,
-  ): Promise<LocationResult> {
+  async reverseGeocode(lat: number, lng: number): Promise<LocationResult> {
     const cacheKey = `location:reverse:${lat.toFixed(4)},${lng.toFixed(4)}`;
-
-    // Check cache first
     const cached = await this.redis.get<LocationResult>(cacheKey);
+
     if (cached) {
       this.logger.log(`Cache hit for reverse geocode: ${lat},${lng}`);
       return cached;
@@ -181,197 +215,31 @@ export class LocationsService {
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
 
     try {
-      const response = await axios.get(
-        `${this.googleBaseUrl}/geocode/json`,
-        {
-          params: {
-            latlng: `${lat},${lng}`,
-            key: apiKey,
-            language: 'en',
-            result_type: 'street_address|route|neighborhood|sublocality',
-          },
+      const response = await axios.get(`${this.googleBaseUrl}/geocode/json`, {
+        params: {
+          latlng: `${lat},${lng}`,
+          key: apiKey,
+          language: 'en',
         },
-      );
+      });
 
-      if (
-        response.data.status !== 'OK' ||
-        !response.data.results.length
-      ) {
-        // Fallback — return coordinates as display name
-        return {
-          id: `gps_${lat}_${lng}`,
-          display_name: 'Current Location',
-          description: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-          lat,
-          lon: lng,
-          category: 'Residential',
-        };
+      if (response.data.status !== 'OK' || !response.data.results.length) {
+        return this.buildFallbackLocation(lat, lng);
       }
 
-      const result = response.data.results[0];
-      const components = result.address_components;
+      const result = this.toLocationResult(response.data.results[0], {
+        fallbackDisplayName: 'Current Location',
+        fallbackDescription: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        fallbackCategory: 'Residential',
+      });
 
-      // Extract meaningful parts of the address
-      const streetNumber = this.getComponent(components, 'street_number');
-      const route = this.getComponent(components, 'route');
-      const neighborhood = this.getComponent(components, 'neighborhood') ||
-        this.getComponent(components, 'sublocality_level_1');
-      const city = this.getComponent(components, 'locality') || 'Lagos';
-
-      const displayName = [streetNumber, route].filter(Boolean).join(' ') ||
-        neighborhood ||
-        result.formatted_address.split(',')[0];
-
-      const description = [neighborhood, city]
-        .filter(Boolean)
-        .join(', ');
-
-      const locationResult: LocationResult = {
-        id: result.place_id,
-        display_name: displayName,
-        description,
-        lat: result.geometry.location.lat,
-        lon: result.geometry.location.lng,
-        category: 'Residential',
-      };
-
-      // Cache for 7 days — addresses rarely change
-      await this.redis.set(cacheKey, locationResult, this.REVERSE_TTL);
-
-      return locationResult;
+      await this.redis.set(cacheKey, result, this.REVERSE_TTL);
+      return result;
     } catch (error: any) {
       this.logger.error(`Reverse geocode failed: ${error.message}`);
-      return {
-        id: `gps_${lat}_${lng}`,
-        display_name: 'Current Location',
-        description: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-        lat,
-        lon: lng,
-        category: 'Residential',
-      };
+      return this.buildFallbackLocation(lat, lng);
     }
   }
-
-  // ─── PLACE DETAILS ────────────────────────────────────────────────
-  // Gets lat/lng for a place_id from Google Places
-
-  private async getPlaceCoords(
-    placeId: string,
-    apiKey: string,
-  ): Promise<{ lat: number; lng: number }> {
-    const cacheKey = `location:place:${placeId}`;
-
-    const cached = await this.redis.get<{ lat: number; lng: number }>(cacheKey);
-    if (cached) return cached;
-
-    try {
-      const response = await axios.get(
-        `${this.googleBaseUrl}/place/details/json`,
-        {
-          params: {
-            place_id: placeId,
-            key: apiKey,
-            fields: 'geometry',
-          },
-        },
-      );
-
-      const location = response.data.result?.geometry?.location;
-      if (!location) return { lat: this.LAGOS_LAT, lng: this.LAGOS_LNG };
-
-      const coords = { lat: location.lat, lng: location.lng };
-
-      // Cache place coords for 30 days — they never change
-      await this.redis.set(cacheKey, coords, 2592000);
-
-      return coords;
-    } catch {
-      return { lat: this.LAGOS_LAT, lng: this.LAGOS_LNG };
-    }
-  }
-
-  private isCategorySearch(query: string): boolean {
-    return this.CATEGORY_KEYWORDS.has(query);
-  }
-
-  private async searchNearbyCategory(
-    query: string,
-    normalizedQuery: string,
-    biasLat?: number,
-    biasLng?: number,
-  ): Promise<LocationResult[]> {
-    const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
-
-    try {
-      const response = await axios.get(
-        `${this.googleBaseUrl}/place/textsearch/json`,
-        {
-          params: {
-            query,
-            key: apiKey,
-            language: 'en',
-            region: 'ng',
-            location: `${biasLat ?? this.LAGOS_LAT},${biasLng ?? this.LAGOS_LNG}`,
-            radius: biasLat !== undefined && biasLng !== undefined ? 5000 : this.LAGOS_RADIUS,
-          },
-        },
-      );
-
-      this.logger.log(`Google nearby category status: ${response.data.status}`);
-      if (
-        response.data.status !== 'OK' &&
-        response.data.status !== 'ZERO_RESULTS'
-      ) {
-        this.logger.error(
-          `Google nearby category error for "${normalizedQuery}": ${response.data.status} - ${response.data.error_message}`,
-        );
-        return [];
-      }
-
-      return (response.data.results ?? []).slice(0, 8).map((result: any) => ({
-        id: result.place_id,
-        display_name: result.name,
-        description: result.formatted_address ?? result.vicinity ?? result.name,
-        lat: result.geometry?.location?.lat ?? this.LAGOS_LAT,
-        lon: result.geometry?.location?.lng ?? this.LAGOS_LNG,
-        category: this.inferCategory(result.types ?? []),
-      }));
-    } catch (error: any) {
-      this.logger.error(`Nearby category search failed for "${query}": ${error.message}`);
-      return [];
-    }
-  }
-
-  // ─── HELPERS ──────────────────────────────────────────────────────
-
-  private getComponent(
-    components: any[],
-    type: string,
-  ): string {
-    const component = components.find((c) => c.types.includes(type));
-    return component?.long_name || '';
-  }
-
-  private inferCategory(types: string[]): string {
-    if (types.includes('airport')) return 'Airport';
-    if (types.includes('lodging')) return 'Hotel';
-    if (types.includes('shopping_mall')) return 'Shopping';
-    if (types.includes('university') || types.includes('school'))
-      return 'Education';
-    if (types.includes('restaurant') || types.includes('food'))
-      return 'Commercial';
-    if (types.includes('transit_station') || types.includes('bus_station'))
-      return 'Transport';
-    if (types.includes('tourist_attraction')) return 'Tourism';
-    if (types.includes('neighborhood') || types.includes('sublocality'))
-      return 'District';
-    return 'Residential';
-  }
-
-  // ─── ROUTE DETAILS ────────────────────────────────────────────────
-  // Calls Google Distance Matrix API to get real road distance
-  // and estimated travel time with current live traffic
-  // This replaces the inaccurate Haversine formula
 
   async getRouteDetails(
     originLat: number,
@@ -385,9 +253,8 @@ export class LocationsService {
     fareEstimate: { low: number; high: number };
   }> {
     const cacheKey = `route:${originLat.toFixed(4)},${originLng.toFixed(4)}:${destLat.toFixed(4)},${destLng.toFixed(4)}`;
-
-    // Cache route for 10 minutes — traffic changes frequently
     const cached = await this.redis.get<any>(cacheKey);
+
     if (cached) {
       this.logger.log(`Cache hit for route: ${cacheKey}`);
       return cached;
@@ -403,42 +270,36 @@ export class LocationsService {
             origins: `${originLat},${originLng}`,
             destinations: `${destLat},${destLng}`,
             mode: 'driving',
-            departure_time: 'now',       // enables live traffic data
-            traffic_model: 'best_guess', // most accurate traffic estimate
+            departure_time: 'now',
+            traffic_model: 'best_guess',
             key: apiKey,
           },
         },
       );
 
       const element = response.data.rows?.[0]?.elements?.[0];
-
       if (!element || element.status !== 'OK') {
         this.logger.error(`Distance Matrix error: ${element?.status}`);
-        // Fall back to Haversine if Google fails
         return this.haversineFallback(originLat, originLng, destLat, destLng);
       }
 
       const distanceKm = element.distance.value / 1000;
-      // duration = without traffic, duration_in_traffic = with live traffic
       const estimatedMins = Math.ceil(element.duration.value / 60);
       const currentTrafficMins = Math.ceil(
         (element.duration_in_traffic?.value ?? element.duration.value) / 60,
       );
 
-      const fareEstimate = this.calculateFareRange(
-        distanceKm,
-        estimatedMins,
-        currentTrafficMins,
-      );
-
       const result = {
-        distanceKm: Math.round(distanceKm * 10) / 10, // 1 decimal place
+        distanceKm: Math.round(distanceKm * 10) / 10,
         estimatedMins,
         currentTrafficMins,
-        fareEstimate,
+        fareEstimate: this.calculateFareRange(
+          distanceKm,
+          estimatedMins,
+          currentTrafficMins,
+        ),
       };
 
-      // Cache for 10 minutes
       await this.redis.set(cacheKey, result, 600);
       this.logger.log(
         `Route: ${distanceKm.toFixed(1)}km, ${estimatedMins}mins base, ${currentTrafficMins}mins in traffic`,
@@ -451,9 +312,234 @@ export class LocationsService {
     }
   }
 
-  // ─── FARE RANGE CALCULATOR ────────────────────────────────────────
-  // Low  = base + distance + base duration time
-  // High = base + distance + traffic duration time
+  private async getPlaceDetails(
+    placeId: string,
+    apiKey: string,
+  ): Promise<GooglePlace | null> {
+    const cacheKey = `location:place:${placeId}`;
+    const cached = await this.redis.get<GooglePlace>(cacheKey);
+
+    if (cached) return cached;
+
+    try {
+      const response = await axios.get(
+        `${this.googleBaseUrl}/place/details/json`,
+        {
+          params: {
+            place_id: placeId,
+            key: apiKey,
+            fields:
+              'place_id,name,formatted_address,geometry,address_component,type',
+          },
+        },
+      );
+
+      const place = response.data.result;
+      if (!place?.geometry?.location) return null;
+
+      await this.redis.set(cacheKey, place, this.PLACE_DETAILS_TTL);
+      return place;
+    } catch (error: any) {
+      this.logger.warn(
+        `Place details lookup failed for ${placeId}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  private isCategorySearch(query: string): boolean {
+    return this.CATEGORY_KEYWORDS.has(query);
+  }
+
+  private async searchNearbyCategory(
+    query: string,
+    normalizedQuery: string,
+    biasLat?: number,
+    biasLng?: number,
+  ): Promise<LocationResult[]> {
+    const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    const hasBias = biasLat !== undefined && biasLng !== undefined;
+
+    try {
+      const response = await axios.get(
+        `${this.googleBaseUrl}/place/textsearch/json`,
+        {
+          params: {
+            query,
+            key: apiKey,
+            language: 'en',
+            region: 'ng',
+            location: `${biasLat ?? this.LAGOS_LAT},${biasLng ?? this.LAGOS_LNG}`,
+            radius: hasBias ? 5000 : this.LAGOS_RADIUS,
+          },
+        },
+      );
+
+      this.logger.log(`Google nearby category status: ${response.data.status}`);
+      if (
+        response.data.status !== 'OK' &&
+        response.data.status !== 'ZERO_RESULTS'
+      ) {
+        this.logger.error(
+          `Google nearby category error for "${normalizedQuery}": ${response.data.status} - ${response.data.error_message}`,
+        );
+        return [];
+      }
+
+      const detailedResults = await Promise.all(
+        (response.data.results ?? []).slice(0, 8).map(async (result: any) => {
+          const placeDetails = result.place_id
+            ? await this.getPlaceDetails(result.place_id, apiKey!)
+            : null;
+          const parsedResult = this.toLocationResult(placeDetails ?? result, {
+            fallbackDisplayName: result.name,
+            fallbackDescription:
+              result.formatted_address ?? result.vicinity ?? result.name,
+            fallbackCategory: this.inferCategory(result.types ?? []),
+          });
+
+          if (hasBias) {
+            return {
+              ...parsedResult,
+              __distanceKm: this.calculateStraightLineDistanceKm(
+                biasLat!,
+                biasLng!,
+                parsedResult.lat,
+                parsedResult.lon,
+              ),
+            };
+          }
+
+          return parsedResult;
+        }),
+      );
+
+      return detailedResults
+        .sort(
+          (a: any, b: any) => (a.__distanceKm ?? 0) - (b.__distanceKm ?? 0),
+        )
+        .map(({ __distanceKm, ...result }: any) => result);
+    } catch (error: any) {
+      this.logger.error(
+        `Nearby category search failed for "${query}": ${error.message}`,
+      );
+      return [];
+    }
+  }
+
+  private toLocationResult(
+    place: GooglePlace,
+    fallback?: {
+      fallbackDisplayName?: string;
+      fallbackDescription?: string;
+      fallbackCategory?: string;
+    },
+  ): LocationResult {
+    const components = place.address_components ?? [];
+    const streetNumber = this.getComponent(components, 'street_number') || null;
+    const street = this.getComponent(components, 'route') || null;
+    const area =
+      this.getComponent(components, 'neighborhood') ||
+      this.getComponent(components, 'sublocality_level_1') ||
+      this.getComponent(components, 'sublocality') ||
+      null;
+    const city =
+      this.getComponent(components, 'locality') ||
+      this.getComponent(components, 'postal_town') ||
+      null;
+    const lga =
+      this.getComponent(components, 'administrative_area_level_2') || null;
+    const state =
+      this.getComponent(components, 'administrative_area_level_1') || null;
+    const country = this.getComponent(components, 'country') || null;
+    const formattedAddress =
+      place.formatted_address ??
+      fallback?.fallbackDescription ??
+      [streetNumber, street, area, city || lga, state]
+        .filter(Boolean)
+        .join(', ');
+    const displayName =
+      [streetNumber, street].filter(Boolean).join(' ') ||
+      place.name ||
+      area ||
+      fallback?.fallbackDisplayName ||
+      formattedAddress ||
+      'Selected Location';
+    const description =
+      [area, city || lga, state]
+        .filter(Boolean)
+        .join(', ') ||
+      fallback?.fallbackDescription ||
+      formattedAddress ||
+      displayName;
+    const placeTypes = place.types ?? [];
+
+    return {
+      id: place.place_id ?? displayName,
+      display_name: displayName,
+      description,
+      lat: place.geometry?.location?.lat ?? this.LAGOS_LAT,
+      lon: place.geometry?.location?.lng ?? this.LAGOS_LNG,
+      category: fallback?.fallbackCategory ?? this.inferCategory(placeTypes),
+      formatted_address: formattedAddress || undefined,
+      street_number: streetNumber,
+      street,
+      area,
+      city,
+      lga,
+      state,
+      country,
+      place_types: placeTypes,
+    };
+  }
+
+  private buildFallbackLocation(lat: number, lng: number): LocationResult {
+    return {
+      id: `gps_${lat}_${lng}`,
+      display_name: 'Current Location',
+      description: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      lat,
+      lon: lng,
+      category: 'Residential',
+      formatted_address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      street_number: null,
+      street: null,
+      area: null,
+      city: null,
+      lga: null,
+      state: null,
+      country: null,
+      place_types: [],
+    };
+  }
+
+  private getComponent(
+    components: Array<{ long_name: string; types: string[] }>,
+    type: string,
+  ): string {
+    const component = components.find((c) => c.types.includes(type));
+    return component?.long_name || '';
+  }
+
+  private inferCategory(types: string[]): string {
+    if (types.includes('airport')) return 'Airport';
+    if (types.includes('lodging')) return 'Hotel';
+    if (types.includes('shopping_mall')) return 'Shopping';
+    if (types.includes('university') || types.includes('school')) {
+      return 'Education';
+    }
+    if (types.includes('restaurant') || types.includes('food')) {
+      return 'Commercial';
+    }
+    if (types.includes('transit_station') || types.includes('bus_station')) {
+      return 'Transport';
+    }
+    if (types.includes('tourist_attraction')) return 'Tourism';
+    if (types.includes('neighborhood') || types.includes('sublocality')) {
+      return 'District';
+    }
+    return 'Residential';
+  }
 
   private calculateFareRange(
     distanceKm: number,
@@ -464,18 +550,12 @@ export class LocationsService {
     const RATE_PER_KM = 100;
     const RATE_PER_MIN = 50;
     const baseFare = BASE_FARE + distanceKm * RATE_PER_KM;
-    const low = Math.round(
-      (baseFare + estimatedMins * RATE_PER_MIN) / 50,
-    ) * 50;
-    const high = Math.round(
-      (baseFare + currentTrafficMins * RATE_PER_MIN) / 50,
-    ) * 50;
+    const low = Math.round((baseFare + estimatedMins * RATE_PER_MIN) / 50) * 50;
+    const high =
+      Math.round((baseFare + currentTrafficMins * RATE_PER_MIN) / 50) * 50;
 
     return { low, high: Math.max(low, high) };
   }
-
-  // ─── HAVERSINE FALLBACK ───────────────────────────────────────────
-  // Used when Google API fails — less accurate but never crashes
 
   private haversineFallback(
     lat1: number,
@@ -488,31 +568,45 @@ export class LocationsService {
     currentTrafficMins: number;
     fareEstimate: { low: number; high: number };
   } {
+    const distanceKm = this.calculateStraightLineDistanceKm(
+      lat1,
+      lng1,
+      lat2,
+      lng2,
+    );
+    const roundedDistanceKm = Math.round(distanceKm * 10) / 10;
+    const estimatedMins = Math.ceil((roundedDistanceKm / 30) * 60);
+    const currentTrafficMins = Math.ceil(estimatedMins * 1.5);
+
+    return {
+      distanceKm: roundedDistanceKm,
+      estimatedMins,
+      currentTrafficMins,
+      fareEstimate: this.calculateFareRange(
+        roundedDistanceKm,
+        estimatedMins,
+        currentTrafficMins,
+      ),
+    };
+  }
+
+  private calculateStraightLineDistanceKm(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number,
+  ): number {
     const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLng = ((lng2 - lng1) * Math.PI) / 180;
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const distanceKm = Math.round(R * c * 10) / 10;
 
-    // Estimate time at 30km/h average Lagos speed
-      const estimatedMins = Math.ceil((distanceKm / 30) * 60);
-      const currentTrafficMins = Math.ceil(estimatedMins * 1.5); // 50% buffer
-
-      return {
-        distanceKm,
-        estimatedMins,
-        currentTrafficMins,
-        fareEstimate: this.calculateFareRange(
-          distanceKm,
-          estimatedMins,
-          currentTrafficMins,
-        ),
-      };
-    }
+    return R * c;
   }
+}

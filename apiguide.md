@@ -103,6 +103,15 @@ type LocationResult = {
   lat: number;
   lon: number;
   category: string;
+  formatted_address?: string;
+  street_number?: string | null;
+  street?: string | null;
+  area?: string | null;
+  city?: string | null;
+  lga?: string | null;
+  state?: string | null;
+  country?: string | null;
+  place_types?: string[];
 };
 ```
 
@@ -160,6 +169,10 @@ type RegisterRequest = {
   age?: string;
   nin?: string;
   transmission?: string;
+  licenseImageUrl?: string;
+  ninImageUrl?: string;
+  selfieImageUrl?: string;
+  backgroundCheckAccepted?: boolean;
   bankName?: string;
   bankCode?: string;
   accountNumber?: string;
@@ -174,6 +187,11 @@ Notes:
 - `bankCode`
 - `accountNumber`
 - `accountName`
+- Driver verification assets can be passed up front as file URLs:
+- `licenseImageUrl`
+- `ninImageUrl`
+- `selfieImageUrl`
+- `backgroundCheckAccepted`
 - Drivers are created with `approvalStatus: 'PENDING'`
 - Owners are created with `approvalStatus: 'APPROVED'`
 - Driver sub-account creation happens asynchronously after registration
@@ -446,9 +464,10 @@ type SearchLocationsQuery = {
 
 Behavior:
 
-- For normal search text, backend uses Google Places Autocomplete
-- For category-like queries such as `hotel`, `shopping mall`, `restaurant`, `airport`, backend uses nearby text search
-- If `biasLat` and `biasLng` are provided, nearby category search is centered around them
+- For normal search text, backend uses Google Places Autocomplete plus Place Details
+- Each result is enriched with structured Google address parts when available
+- For category-like queries such as `hotel`, `shopping mall`, `restaurant`, `airport`, backend uses nearby text search plus Place Details enrichment
+- If `biasLat` and `biasLng` are provided, nearby category search is centered around them and results are sorted nearest-first from that pickup point
 - Search results are cached in Redis
 
 Response:
@@ -459,8 +478,9 @@ type SearchLocationsResponse = LocationResult[];
 
 Frontend note:
 
-- For “destination category” chips like hotels or shopping malls, pass the current pickup/current location as `biasLat` and `biasLng`
-- That gives closer results instead of broad Lagos-wide matches
+- For destination category chips like hotels or shopping malls, pass the selected pickup location as `biasLat` and `biasLng`
+- That makes category search behave like "nearest hotel/restaurant/mall from this pickup point, then outward"
+- For precise display, prefer `formatted_address` when available and use `street_number`, `street`, `area`, `lga`, `state`, and `country` for structured UI
 
 ### `GET /locations/reverse`
 
@@ -482,6 +502,7 @@ type ReverseGeocodeResponse = LocationResult;
 Behavior:
 
 - Returns a best-effort readable current location
+- Reverse geocode also attempts to populate `street_number`, `street`, `area`, `city`, `lga`, `state`, and `country`
 - Falls back to:
 
 ```ts
@@ -491,7 +512,8 @@ Behavior:
   description: '<lat>, <lng>',
   lat,
   lon: lng,
-  category: 'Residential'
+  category: 'Residential',
+  formatted_address: '<lat>, <lng>'
 }
 ```
 
@@ -672,6 +694,24 @@ Backend side effect:
 
 - Emits `ride:declined` to owner socket
 
+### `GET /rides/current`
+
+Auth required: yes
+
+Accessible by: `OWNER` or `DRIVER`
+
+Behavior:
+
+- Returns the user's most recent ride in `PENDING_ACCEPTANCE`, `ASSIGNED`, or `IN_PROGRESS`
+- If there is no active ride, returns the most recent `COMPLETED` ride whose `paymentStatus` is still `UNPAID`, `PENDING`, or `FAILED`
+- Returns `null` if there is no current ride context to restore
+
+Response:
+
+```ts
+type GetCurrentRideResponse = GetRideResponse | null;
+```
+
 ### `GET /rides/:id`
 
 Auth required: yes
@@ -757,9 +797,9 @@ Backend side effects on completion:
 - sets `completedAt`
 - calculates final fare using `baseFare + (distanceKm * pricePerKm) + (actualMins * timeRate)`
 - updates `amount`, `finalFare`, `commissionAmount`, `driverEarnings`
-- increments driver `walletBalance`
 - increments `totalTrips` for driver and owner
 - emits `trip:completed` to owner socket
+- driver `walletBalance` is only incremented after payment is later verified
 
 ### `POST /rides/:id/cancel`
 
@@ -840,7 +880,37 @@ Frontend flow:
 1. Owner completes ride flow.
 2. Call this endpoint.
 3. Redirect or open `checkoutUrl`.
-4. After payment, refresh ride/payment history as needed.
+4. Monnify redirect completion alone is not proof of payment.
+5. Treat the payment as pending until backend confirmation arrives.
+6. Prefer either:
+   - owner socket event `payment:updated`
+   - `GET /payments/status/:tripId`
+   - or `GET /rides/current` / `GET /rides/:id` if you are already restoring ride state
+7. Only show "payment confirmed" when backend state is `paymentStatus === 'PAID'`.
+
+### `GET /payments/status/:tripId`
+
+Auth required: yes
+
+Accessible by: trip owner, trip driver, or admin
+
+Response:
+
+```ts
+type PaymentStatusResponse = {
+  tripId: string;
+  paymentStatus: PaymentStatus;
+  paidAt: string | null;
+  amount: number;
+  finalFare: number | null;
+  driverEarnings: number;
+  platformEarnings: number;
+  transactionReference: string | null;
+  paymentRecordId: string | null;
+  paymentMethod: string | null;
+  paymentRecordCreatedAt: string | null;
+};
+```
 
 ### `GET /payments/wallet`
 
@@ -1168,6 +1238,20 @@ Sent to owner when trip is marked completed.
 type TripCompletedEvent = {
   tripId: string;
   fareBreakdown: Record<string, unknown>;
+};
+```
+
+#### `payment:updated`
+
+Sent to owner when trip payment changes state.
+
+```ts
+type PaymentUpdatedEvent = {
+  tripId: string;
+  paymentStatus: PaymentStatus;
+  paidAt: string | null;
+  transactionReference: string | null;
+  message: string;
 };
 ```
 

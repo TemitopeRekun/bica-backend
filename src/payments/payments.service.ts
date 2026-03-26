@@ -5,10 +5,12 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
+import { PaymentStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MonnifyService } from './monnify.service';
 import { ConfigService } from '@nestjs/config';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
+import { RidesGateway } from '../rides/rides.gateway';
 
 @Injectable()
 export class PaymentsService {
@@ -19,6 +21,7 @@ export class PaymentsService {
     private monnify: MonnifyService,
     private config: ConfigService,
     private adminRealtimeGateway: AdminRealtimeGateway,
+    private ridesGateway: RidesGateway,
   ) {}
 
   // â”€â”€â”€ CREATE MONNIFY SUB ACCOUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -152,7 +155,63 @@ export class PaymentsService {
       driverId: trip.driverId,
     });
 
+    this.ridesGateway.notifyOwnerPaymentUpdated(trip.ownerId, {
+      tripId,
+      paymentStatus: PaymentStatus.PENDING,
+      paidAt: null,
+      transactionReference,
+      message: 'Payment initiated. Awaiting checkout completion.',
+    });
+
     return response;
+  }
+
+  async getPaymentStatus(
+    tripId: string,
+    requestingUserId: string,
+    role: UserRole,
+  ) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      include: {
+        paymentRecord: {
+          select: {
+            id: true,
+            monnifyTxRef: true,
+            paymentMethod: true,
+            paidAt: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!trip) {
+      throw new NotFoundException('Trip not found');
+    }
+
+    const canAccess =
+      role === UserRole.ADMIN ||
+      trip.ownerId === requestingUserId ||
+      trip.driverId === requestingUserId;
+
+    if (!canAccess) {
+      throw new ForbiddenException('You do not have access to this payment');
+    }
+
+    return {
+      tripId: trip.id,
+      paymentStatus: trip.paymentStatus,
+      paidAt: trip.paidAt,
+      amount: trip.amount,
+      finalFare: trip.finalFare,
+      driverEarnings: trip.driverEarnings,
+      platformEarnings: trip.commissionAmount,
+      transactionReference: trip.monnifyTxRef,
+      paymentRecordId: trip.paymentRecord?.id ?? null,
+      paymentMethod: trip.paymentRecord?.paymentMethod ?? null,
+      paymentRecordCreatedAt: trip.paymentRecord?.createdAt ?? null,
+    };
   }
 
   // â”€â”€â”€ PROCESS WEBHOOK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -211,15 +270,25 @@ export class PaymentsService {
         paymentStatus: 'FAILED',
         driverId: trip.driverId,
       });
+
+      this.ridesGateway.notifyOwnerPaymentUpdated(trip.ownerId, {
+        tripId: trip.id,
+        paymentStatus: PaymentStatus.FAILED,
+        paidAt: null,
+        transactionReference: txRef,
+        message: 'Payment could not be verified. Please try again.',
+      });
       return;
     }
+
+    const paidAt = new Date();
 
     await this.prisma.$transaction([
       this.prisma.trip.update({
         where: { id: trip.id },
         data: {
           paymentStatus: 'PAID',
-          paidAt: new Date(),
+          paidAt,
         },
       }),
       this.prisma.paymentRecord.create({
@@ -230,7 +299,7 @@ export class PaymentsService {
           platformAmount: trip.commissionAmount,
           monnifyTxRef: txRef,
           paymentMethod: verification.paymentMethod,
-          paidAt: new Date(),
+          paidAt,
           webhookPayload: payload,
         },
       }),
@@ -253,6 +322,14 @@ export class PaymentsService {
       paymentMethod: verification.paymentMethod,
       paymentStatus: 'PAID',
       driverId: trip.driverId,
+    });
+
+    this.ridesGateway.notifyOwnerPaymentUpdated(trip.ownerId, {
+      tripId: trip.id,
+      paymentStatus: PaymentStatus.PAID,
+      paidAt: paidAt.toISOString(),
+      transactionReference: txRef,
+      message: 'Payment confirmed.',
     });
   }
 

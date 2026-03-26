@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
-import { TripStatus, UserRole } from '@prisma/client';
+import { PaymentStatus, TripStatus, UserRole } from '@prisma/client';
 import { RidesGateway } from './rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 
@@ -393,6 +393,61 @@ export class RidesService {
     return response;
   }
 
+  async getCurrentRide(userId: string, userRole: UserRole) {
+    const participantFilter =
+      userRole === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
+
+    const include = {
+      owner: {
+        select: { id: true, name: true, phone: true, avatarUrl: true },
+      },
+      driver: {
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          avatarUrl: true,
+          rating: true,
+        },
+      },
+    };
+
+    const activeTrip = await this.prisma.trip.findFirst({
+      where: {
+        ...participantFilter,
+        status: {
+          in: [
+            TripStatus.PENDING_ACCEPTANCE,
+            TripStatus.ASSIGNED,
+            TripStatus.IN_PROGRESS,
+          ],
+        },
+      },
+      include,
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (activeTrip) {
+      return activeTrip;
+    }
+
+    return this.prisma.trip.findFirst({
+      where: {
+        ...participantFilter,
+        status: TripStatus.COMPLETED,
+        paymentStatus: {
+          in: [
+            PaymentStatus.UNPAID,
+            PaymentStatus.PENDING,
+            PaymentStatus.FAILED,
+          ],
+        },
+      },
+      include,
+      orderBy: { completedAt: 'desc' },
+    });
+  }
+
   // ─── GET SINGLE TRIP ─────────────────────────────────────────────
 
   async findOne(tripId: string, userId: string) {
@@ -522,9 +577,6 @@ export class RidesService {
       updateData.finalFare = 0;
     }
 
-    const fareBreakdown = updateData._fareBreakdown;
-    delete updateData._fareBreakdown; // don't try to save this to DB
-
     const updated = await this.prisma.trip.update({
       where: { id: tripId },
       data: updateData,
@@ -538,14 +590,8 @@ export class RidesService {
       },
     });
 
-    // Attach fare breakdown to response so frontend can display it
-    const response = {
-      ...updated,
-      fareBreakdown: fareBreakdown ?? null,
-    };
-
-    this.adminRealtimeGateway.notifyTripUpdated('status_changed', response);
-    return response;
+    this.adminRealtimeGateway.notifyTripUpdated('status_changed', updated);
+    return updated;
   }
 
   // ─── STATUS TRANSITION RULES ─────────────────────────────────────

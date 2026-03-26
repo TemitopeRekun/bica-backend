@@ -39,6 +39,14 @@ export class RidesController {
     return this.ridesService.getHistory(user.sub, user.role);
   }
 
+  // Owner or driver gets their current ride context
+  // GET /rides/current
+  @Roles(UserRole.OWNER, UserRole.DRIVER)
+  @Get('current')
+  getCurrentRide(@CurrentUser() user: any) {
+    return this.ridesService.getCurrentRide(user.sub, user.role);
+  }
+
   // Driver accepts a ride request
   // POST /rides/:id/accept
   @Post(':id/accept')
