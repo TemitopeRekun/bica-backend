@@ -10,7 +10,7 @@ export const NIGERIAN_BANKS = [
   { name: 'Keystone Bank', code: '082' },
   { name: 'Kuda Bank', code: '50211' },
   { name: 'Opay', code: '999992' },
-  { name: 'Palmpay', code: '999991' },
+  { name: 'PalmPay', code: '100033' },
   { name: 'Polaris Bank', code: '076' },
   { name: 'Providus Bank', code: '101' },
   { name: 'Stanbic IBTC Bank', code: '221' },

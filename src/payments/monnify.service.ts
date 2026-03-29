@@ -1,18 +1,55 @@
 import {
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
-  InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { sha512 } from 'js-sha512';
+
+export class MonnifyApiException extends HttpException {
+  constructor(
+    message: string,
+    public readonly monnifyStatus?: number,
+    public readonly monnifyCode?: string,
+    public readonly monnifyMessage?: string,
+  ) {
+    const statusCode =
+      (monnifyStatus ?? 500) >= 500
+        ? HttpStatus.BAD_GATEWAY
+        : HttpStatus.BAD_REQUEST;
+
+    super(
+      {
+        message,
+        error: statusCode === HttpStatus.BAD_GATEWAY ? 'Bad Gateway' : 'Bad Request',
+        statusCode,
+      },
+      statusCode,
+    );
+  }
+}
+
+export type MonnifySubAccount = {
+  subAccountCode: string;
+  accountNumber: string;
+  accountName: string;
+  currencyCode: string;
+  email: string;
+  bankCode: string;
+  bankName: string;
+  defaultSplitPercentage: number;
+  settlementProfileCode: string;
+  settlementReportEmails: string[];
+};
 
 @Injectable()
 export class MonnifyService {
   private readonly logger = new Logger(MonnifyService.name);
   private readonly http: AxiosInstance;
   private accessToken: string | null = null;
-  private tokenExpiresAt: number = 0;
+  private tokenExpiresAt = 0;
 
   constructor(private config: ConfigService) {
     this.http = axios.create({
@@ -21,22 +58,15 @@ export class MonnifyService {
     });
   }
 
-  // ─── AUTHENTICATION ───────────────────────────────────────────────
-  // Monnify uses Basic Auth to get a bearer token
-  // Token expires — we cache it and refresh when needed
-
   private async getAccessToken(): Promise<string> {
     const now = Date.now();
 
-    // Return cached token if still valid (with 60s buffer)
     if (this.accessToken && now < this.tokenExpiresAt - 60000) {
-      return this.accessToken;
+      return this.accessToken!;
     }
 
     const apiKey = this.config.get<string>('MONNIFY_API_KEY');
     const secretKey = this.config.get<string>('MONNIFY_SECRET_KEY');
-
-    // Monnify expects Base64(apiKey:secretKey)
     const credentials = Buffer.from(`${apiKey}:${secretKey}`).toString('base64');
 
     try {
@@ -50,84 +80,125 @@ export class MonnifyService {
 
       const { accessToken, expiresIn } = response.data.responseBody;
       this.accessToken = accessToken;
-      // expiresIn is in seconds — convert to ms timestamp
       this.tokenExpiresAt = now + expiresIn * 1000;
 
       this.logger.log('Monnify access token refreshed');
       return this.accessToken!;
     } catch (error) {
       this.logger.error('Failed to authenticate with Monnify', error);
-      throw new InternalServerErrorException('Payment service unavailable');
+      throw new MonnifyApiException(
+        'Payment service unavailable',
+        503,
+        undefined,
+        'Could not authenticate with Monnify',
+      );
     }
   }
 
-  // ─── AUTHENTICATED REQUEST HELPER ────────────────────────────────
+  private async request<T>(
+    method: 'get' | 'post' | 'put' | 'delete',
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig,
+  ): Promise<T> {
+    const token = await this.getAccessToken();
 
- private async request<T>(
-  method: 'get' | 'post' | 'put' | 'delete',
-  url: string,
-  data?: any,
-): Promise<T> {
-  const token = await this.getAccessToken();
+    try {
+      const response = await this.http.request({
+        method,
+        url,
+        data,
+        ...config,
+        headers: {
+          ...(config?.headers ?? {}),
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-  try {
-    const response = await this.http.request({
-      method,
-      url,
-      data,
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    return response.data.responseBody;
-  } catch (error: any) {
-    // Log the FULL error response for debugging
-    this.logger.error(
-      `Monnify API error [${url}]: ${JSON.stringify(error.response?.data)}`,
-    );
-    const message =
-      error.response?.data?.responseMessage || error.message;
-    throw new InternalServerErrorException(`Payment error: ${message}`);
+      return response.data.responseBody;
+    } catch (error: any) {
+      const status = error.response?.status;
+      const responseCode = error.response?.data?.responseCode;
+      const responseMessage =
+        error.response?.data?.responseMessage || error.message;
+
+      this.logger.error(
+        `Monnify API error [${method.toUpperCase()} ${url}]: ${JSON.stringify({
+          status,
+          responseCode,
+          responseMessage,
+          data: error.response?.data,
+        })}`,
+      );
+
+      throw new MonnifyApiException(
+        `Payment error: ${responseMessage}`,
+        status,
+        responseCode,
+        responseMessage,
+      );
+    }
   }
-}
 
-  // ─── CREATE SUB ACCOUNT ───────────────────────────────────────────
-  // Called async after driver registers bank details
-  // Returns the subAccountCode to store on User record
+  async createSubAccount(driver: {
+    name: string;
+    email: string;
+    bankCode: string;
+    accountNumber: string;
+  }): Promise<string> {
+    const payload = [
+      {
+        currencyCode: 'NGN',
+        bankCode: driver.bankCode,
+        accountNumber: driver.accountNumber,
+        email: driver.email,
+        defaultSplitPercentage: 75,
+      },
+    ];
 
- async createSubAccount(driver: {
-  name: string;
-  email: string;
-  bankCode: string;
-  accountNumber: string;
-}): Promise<string> {
+    const result = await this.request<MonnifySubAccount[]>(
+      'post',
+      '/api/v1/sub-accounts',
+      payload,
+    );
 
-  // Request body is an ARRAY per Monnify docs
-  const payload = [
-    {
-      currencyCode: 'NGN',
-      bankCode: driver.bankCode,
-      accountNumber: driver.accountNumber,
-      email: driver.email,
-      defaultSplitPercentage: '75',
-    },
-  ];
+    const subAccount = result[0];
+    this.logger.log(
+      `Sub account created for ${driver.name}: ${subAccount.subAccountCode}`,
+    );
 
-  const result = await this.request<{ subAccountCode: string }[]>(
-    'post',
-    '/api/v1/sub-accounts',  // ← correct endpoint
-    payload,
-  );
+    return subAccount.subAccountCode;
+  }
 
-  // Response is also an array — get first item
-  const subAccount = result[0];
-  this.logger.log(
-    `Sub account created for ${driver.name}: ${subAccount.subAccountCode}`,
-  );
-  return subAccount.subAccountCode;
-}
+  async listSubAccounts(): Promise<MonnifySubAccount[]> {
+    return this.request<MonnifySubAccount[]>('get', '/api/v1/sub-accounts');
+  }
 
-  // ─── INITIALISE TRANSACTION ───────────────────────────────────────
-  // Creates a payment request with split config
-  // Returns checkout URL for the owner to pay
+  async findSubAccountByBankDetails(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<MonnifySubAccount | null> {
+    const subAccounts = await this.listSubAccounts();
+
+    return (
+      subAccounts.find(
+        (subAccount) =>
+          subAccount.bankCode === bankCode &&
+          subAccount.accountNumber === accountNumber,
+      ) ?? null
+    );
+  }
+
+  async validateBankAccount(bankCode: string, accountNumber: string) {
+    return this.request<{
+      accountNumber: string;
+      accountName: string;
+      bankCode: string;
+      currencyCode: string;
+    }>('get', '/api/v1/disbursements/account/validate', undefined, {
+      params: { bankCode, accountNumber },
+    });
+  }
 
   async initiateTransaction(params: {
     amount: number;
@@ -149,7 +220,6 @@ export class MonnifyService {
       contractCode,
       redirectUrl: 'https://bicadrive.app/payment/complete',
       paymentMethods: ['ACCOUNT_TRANSFER', 'CARD'],
-      // Split config — driver gets their percentage, rest goes to BICA main account
       incomeSplitConfig: [
         {
           subAccountCode: params.driverSubAccountCode,
@@ -171,10 +241,6 @@ export class MonnifyService {
     };
   }
 
-  // ─── VERIFY TRANSACTION ───────────────────────────────────────────
-  // Called after webhook to double-check payment status with Monnify
-  // Never trust webhook alone — always verify with API
-
   async verifyTransaction(transactionReference: string): Promise<{
     paid: boolean;
     amount: number;
@@ -195,11 +261,6 @@ export class MonnifyService {
       paymentMethod: result.paymentMethod,
     };
   }
-
-  // ─── VERIFY WEBHOOK SIGNATURE ─────────────────────────────────────
-  // Computes HMAC-SHA512 of secretKey + rawBody
-  // Compares with monnify-signature header
-  // Returns false if signature doesn't match — reject the request
 
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const secretKey = this.config.get<string>('MONNIFY_SECRET_KEY');

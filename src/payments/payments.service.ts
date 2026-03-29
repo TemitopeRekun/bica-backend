@@ -1,16 +1,34 @@
 import {
-  Injectable,
-  NotFoundException,
+  BadGatewayException,
   BadRequestException,
   ForbiddenException,
+  Injectable,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { PaymentStatus, UserRole } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { MonnifyService } from './monnify.service';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { RidesGateway } from '../rides/rides.gateway';
+import { MonnifyApiException, MonnifyService } from './monnify.service';
+
+type DriverPayoutProfile = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  bankName: string | null;
+  bankCode: string | null;
+  accountNumber: string | null;
+  monnifySubAccountCode: string | null;
+};
+
+type EnsureDriverSubAccountResult = {
+  driverId: string;
+  subAccountCode: string;
+  status: 'already_configured' | 'created' | 'recovered_existing';
+};
 
 @Injectable()
 export class PaymentsService {
@@ -24,26 +42,96 @@ export class PaymentsService {
     private ridesGateway: RidesGateway,
   ) {}
 
-  // â”€â”€â”€ CREATE MONNIFY SUB ACCOUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Called async after driver registration
-  // Stores subAccountCode on User record
-
-  async createDriverSubAccount(driverId: string): Promise<void> {
-    const driver = await this.prisma.user.findUnique({
+  private async getDriverPayoutProfile(
+    driverId: string,
+  ): Promise<DriverPayoutProfile | null> {
+    return this.prisma.user.findUnique({
       where: { id: driverId },
       select: {
         id: true,
         name: true,
         email: true,
+        role: true,
+        bankName: true,
         bankCode: true,
         accountNumber: true,
         monnifySubAccountCode: true,
       },
     });
+  }
 
-    if (!driver) return;
-    if (driver.monnifySubAccountCode) return;
-    if (!driver.bankCode || !driver.accountNumber) return;
+  private maskAccountNumber(accountNumber: string | null | undefined): string {
+    if (!accountNumber) {
+      return 'unknown';
+    }
+
+    return `****${accountNumber.slice(-4)}`;
+  }
+
+  private async storeDriverSubAccountCode(
+    driverId: string,
+    subAccountCode: string,
+  ): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: driverId },
+      data: { monnifySubAccountCode: subAccountCode },
+    });
+  }
+
+  private async logValidatedBankAccount(
+    driver: DriverPayoutProfile,
+  ): Promise<void> {
+    if (!driver.bankCode || !driver.accountNumber) {
+      return;
+    }
+
+    try {
+      const validated = await this.monnify.validateBankAccount(
+        driver.bankCode,
+        driver.accountNumber,
+      );
+
+      this.logger.warn(
+        `Monnify validated ${driver.bankName ?? validated.bankCode} account ${this.maskAccountNumber(driver.accountNumber)} for driver ${driver.id} (${validated.accountName}), but sub account creation still failed.`,
+      );
+    } catch (validationError) {
+      const message =
+        validationError instanceof Error
+          ? validationError.message
+          : 'Unknown validation error';
+
+      this.logger.warn(
+        `Monnify could not validate account ${this.maskAccountNumber(driver.accountNumber)} for driver ${driver.id} after sub account creation failed: ${message}`,
+      );
+    }
+  }
+
+  async ensureDriverSubAccount(
+    driverId: string,
+  ): Promise<EnsureDriverSubAccountResult> {
+    const driver = await this.getDriverPayoutProfile(driverId);
+
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    if (driver.role !== UserRole.DRIVER) {
+      throw new BadRequestException('User is not a driver');
+    }
+
+    if (driver.monnifySubAccountCode) {
+      return {
+        driverId,
+        subAccountCode: driver.monnifySubAccountCode,
+        status: 'already_configured',
+      };
+    }
+
+    if (!driver.bankCode || !driver.accountNumber) {
+      throw new BadRequestException(
+        'Driver payout bank details are incomplete.',
+      );
+    }
 
     try {
       const subAccountCode = await this.monnify.createSubAccount({
@@ -53,23 +141,95 @@ export class PaymentsService {
         accountNumber: driver.accountNumber,
       });
 
-      await this.prisma.user.update({
-        where: { id: driverId },
-        data: { monnifySubAccountCode: subAccountCode },
-      });
-
+      await this.storeDriverSubAccountCode(driverId, subAccountCode);
       this.logger.log(`Sub account created and stored for driver ${driverId}`);
+
+      return {
+        driverId,
+        subAccountCode,
+        status: 'created',
+      };
     } catch (error) {
-      this.logger.error(
-        `Failed to create sub account for driver ${driverId}`,
-        error,
-      );
+      if (error instanceof MonnifyApiException) {
+        const monnifyMessage = error.monnifyMessage?.toLowerCase() ?? '';
+        const alreadyExists =
+          error.monnifyStatus === 422 &&
+          monnifyMessage.includes('already exists');
+
+        if (alreadyExists) {
+          try {
+            const existing = await this.monnify.findSubAccountByBankDetails(
+              driver.bankCode,
+              driver.accountNumber,
+            );
+
+            if (existing) {
+              await this.storeDriverSubAccountCode(
+                driverId,
+                existing.subAccountCode,
+              );
+
+              this.logger.warn(
+                `Recovered existing Monnify sub account ${existing.subAccountCode} for driver ${driverId}`,
+              );
+
+              return {
+                driverId,
+                subAccountCode: existing.subAccountCode,
+                status: 'recovered_existing',
+              };
+            }
+          } catch (lookupError) {
+            const lookupMessage =
+              lookupError instanceof Error
+                ? lookupError.message
+                : 'Unknown lookup error';
+
+            this.logger.warn(
+              `Monnify reported an existing sub account for driver ${driverId}, but lookup failed: ${lookupMessage}`,
+            );
+          }
+
+          throw new BadGatewayException(
+            'Monnify reported an existing payout account, but the sub account could not be recovered. Please retry later.',
+          );
+        }
+
+        if ((error.monnifyStatus ?? 0) >= 500) {
+          await this.logValidatedBankAccount(driver);
+
+          throw new BadGatewayException(
+            'Monnify could not provision the driver payout account right now. Please retry later or use a different bank account.',
+          );
+        }
+
+        throw new BadRequestException(
+          error.monnifyMessage || 'Driver bank details were rejected by Monnify.',
+        );
+      }
+
+      throw error;
     }
   }
 
-  // â”€â”€â”€ INITIATE PAYMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Called after trip is COMPLETED
-  // Generates Monnify checkout URL for owner to pay
+  async retryDriverSubAccount(driverId: string) {
+    return this.ensureDriverSubAccount(driverId);
+  }
+
+  async createDriverSubAccount(driverId: string): Promise<void> {
+    try {
+      await this.ensureDriverSubAccount(driverId);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown Monnify error';
+      const trace = error instanceof Error ? error.stack : undefined;
+
+      this.logger.error(
+        `Failed to create sub account for driver ${driverId}: ${message}`,
+        trace,
+      );
+    }
+  }
 
   async initiatePayment(tripId: string, requestingUserId: string) {
     const trip = await this.prisma.trip.findUnique({
@@ -92,7 +252,9 @@ export class PaymentsService {
       },
     });
 
-    if (!trip) throw new NotFoundException('Trip not found');
+    if (!trip) {
+      throw new NotFoundException('Trip not found');
+    }
 
     if (trip.ownerId !== requestingUserId) {
       throw new ForbiddenException('Only the trip owner can initiate payment');
@@ -108,7 +270,13 @@ export class PaymentsService {
       throw new BadRequestException('This trip has already been paid for');
     }
 
-    if (!trip.driver?.monnifySubAccountCode) {
+    const driverSubAccountCode =
+      trip.driver?.monnifySubAccountCode ??
+      (trip.driverId
+        ? (await this.ensureDriverSubAccount(trip.driverId)).subAccountCode
+        : null);
+
+    if (!driverSubAccountCode) {
       throw new BadRequestException(
         'Driver payment account not configured. Please contact support.',
       );
@@ -126,7 +294,7 @@ export class PaymentsService {
         tripId: trip.id,
         ownerEmail: trip.owner.email,
         ownerName: trip.owner.name,
-        driverSubAccountCode: trip.driver.monnifySubAccountCode,
+        driverSubAccountCode,
         driverSplitPercent,
       });
 
@@ -213,10 +381,6 @@ export class PaymentsService {
       paymentRecordCreatedAt: trip.paymentRecord?.createdAt ?? null,
     };
   }
-
-  // â”€â”€â”€ PROCESS WEBHOOK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Monnify calls this when payment is confirmed
-  // Security: verify signature, check idempotency, verify with API
 
   async processWebhook(
     rawBody: string,
@@ -312,7 +476,7 @@ export class PaymentsService {
     ]);
 
     this.logger.log(
-      `Payment processed for trip ${trip.id} â€” â‚¦${verification.amount}`,
+      `Payment processed for trip ${trip.id} - NGN ${verification.amount}`,
     );
 
     this.adminRealtimeGateway.notifyPaymentUpdated('paid', {
@@ -333,8 +497,6 @@ export class PaymentsService {
     });
   }
 
-  // â”€â”€â”€ WALLET SUMMARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
   async getWalletSummary(driverId: string) {
     const driver = await this.prisma.user.findUnique({
       where: { id: driverId },
@@ -343,12 +505,15 @@ export class PaymentsService {
         walletBalance: true,
         totalTrips: true,
         bankName: true,
+        bankCode: true,
         accountNumber: true,
         monnifySubAccountCode: true,
       },
     });
 
-    if (!driver) throw new NotFoundException('Driver not found');
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
 
     const totalEarned = await this.prisma.trip.aggregate({
       where: { driverId, status: 'COMPLETED', paymentStatus: 'PAID' },
@@ -378,13 +543,13 @@ export class PaymentsService {
         ? `****${driver.accountNumber.slice(-4)}`
         : null,
       subAccountActive: !!driver.monnifySubAccountCode,
+      canRetrySubAccountSetup:
+        !driver.monnifySubAccountCode &&
+        !!driver.bankCode &&
+        !!driver.accountNumber,
       recentPayments,
     };
   }
-
-  // â”€â”€â”€ MONTHLY WALLET RESET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Archives current balance to history then resets to 0
-  // Called by admin or scheduled job on first day of each month
 
   async resetWallets(adminId: string) {
     const drivers = await this.prisma.user.findMany({
@@ -408,7 +573,7 @@ export class PaymentsService {
     });
 
     this.logger.log(
-      `Monthly wallet reset by admin ${adminId} â€” ${drivers.length} drivers reset`,
+      `Monthly wallet reset by admin ${adminId} - ${drivers.length} drivers reset`,
     );
 
     return {
@@ -421,8 +586,6 @@ export class PaymentsService {
       })),
     };
   }
-
-  // â”€â”€â”€ PAYMENT HISTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getPaymentHistory(userId: string, role: string) {
     const where =
@@ -449,8 +612,6 @@ export class PaymentsService {
       orderBy: { paidAt: 'desc' },
     });
   }
-
-  // â”€â”€â”€ ADMIN: GET ALL PENDING PAYMENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getPendingPayments() {
     return this.prisma.trip.findMany({
