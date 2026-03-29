@@ -56,9 +56,6 @@ export class RidesService {
       );
     }
 
-    // Cancel the auto-decline timer
-    this.cancelAcceptanceTimer(tripId);
-
     const updated = await this.prisma.trip.update({
       where: { id: tripId },
       data: { status: TripStatus.ASSIGNED },
@@ -96,9 +93,6 @@ export class RidesService {
       );
     }
 
-    // Cancel the auto-decline timer
-    this.cancelAcceptanceTimer(tripId);
-
     await this.prisma.trip.update({
       where: { id: tripId },
       data: { status: TripStatus.DECLINED },
@@ -116,59 +110,6 @@ export class RidesService {
       driverId,
     });
     return { message: 'Ride declined successfully' };
-  }
-
-  // Map to track active timers so we can cancel them on accept/decline
-  private acceptanceTimers = new Map<string, NodeJS.Timeout>();
-
-  private startAcceptanceTimer(
-    tripId: string,
-    ownerId: string,
-    driverId: string,
-  ) {
-    const timer = setTimeout(async () => {
-      // Check if trip is still pending acceptance
-      const trip = await this.prisma.trip.findUnique({
-        where: { id: tripId },
-        select: { status: true },
-      });
-
-      if (trip?.status === TripStatus.PENDING_ACCEPTANCE) {
-        // Auto-decline — driver didn't respond
-        await this.prisma.trip.update({
-          where: { id: tripId },
-          data: { status: TripStatus.DECLINED },
-        });
-
-        // Notify owner to pick another driver
-        this.gateway.notifyOwnerDriverDeclined(ownerId, {
-          tripId,
-          reason: 'timeout',
-          message: 'Driver did not respond. Please select another driver.',
-        });
-
-        this.adminRealtimeGateway.notifyTripUpdated('timed_out', {
-          tripId,
-          driverId,
-          ownerId,
-          status: TripStatus.DECLINED,
-        });
-
-        console.log(`Trip ${tripId} auto-declined after 60s timeout`);
-      }
-
-      this.acceptanceTimers.delete(tripId);
-    }, 60000); // 60 seconds
-
-    this.acceptanceTimers.set(tripId, timer);
-  }
-
-  private cancelAcceptanceTimer(tripId: string) {
-    const timer = this.acceptanceTimers.get(tripId);
-    if (timer) {
-      clearTimeout(timer);
-      this.acceptanceTimers.delete(tripId);
-    }
   }
 
   // ─── FINAL FARE ENGINE ───────────────────────────────────────────
@@ -375,14 +316,11 @@ export class RidesService {
       },
     });
 
-    // Notify driver via WebSocket — they have 60 seconds to respond
+    // Notify driver via WebSocket about the new ride request
     this.gateway.notifyDriverNewRide(dto.driverId, {
       ...trip,
       estimatedArrivalMins: null,
     });
-
-    // Start 60 second auto-decline timer
-    this.startAcceptanceTimer(trip.id, ownerId, dto.driverId);
 
     const response = {
       ...trip,
@@ -607,7 +545,11 @@ export class RidesService {
     const isAdmin = userRole === UserRole.ADMIN;
 
     const allowed: Partial<Record<TripStatus, TripStatus[]>> = {
-      [TripStatus.PENDING_ACCEPTANCE]: [TripStatus.ASSIGNED, TripStatus.DECLINED],
+      [TripStatus.PENDING_ACCEPTANCE]: [
+        TripStatus.ASSIGNED,
+        TripStatus.DECLINED,
+        TripStatus.CANCELLED,
+      ],
       [TripStatus.ASSIGNED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
       [TripStatus.IN_PROGRESS]: [TripStatus.COMPLETED],
       [TripStatus.SEARCHING]: [TripStatus.CANCELLED],

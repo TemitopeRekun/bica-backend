@@ -586,7 +586,7 @@ Behavior:
 - has no active assigned/in-progress/pending-acceptance trip
 - Trip is created with `status: 'PENDING_ACCEPTANCE'`
 - Backend emits `ride:assigned` to the selected driver socket
-- Backend starts a 60 second auto-decline timer
+- Trip stays pending until the driver accepts, the driver declines, or the owner explicitly cancels
 
 Response:
 
@@ -613,6 +613,7 @@ type CreateRideResponse = Trip & {
 Frontend note:
 
 - If backend responds with `This driver is no longer online`, refresh available drivers and ask the owner to pick again
+- Use the cancel ride button with `POST /rides/:id/cancel` if the owner wants to stop a pending request before the driver responds
 
 ### `GET /rides/history`
 
@@ -754,7 +755,7 @@ type UpdateRideStatusRequest = {
 
 Allowed transitions currently enforced:
 
-- `PENDING_ACCEPTANCE -> ASSIGNED | DECLINED`
+- `PENDING_ACCEPTANCE -> ASSIGNED | DECLINED | CANCELLED`
 - `ASSIGNED -> IN_PROGRESS | CANCELLED`
 - `IN_PROGRESS -> COMPLETED`
 - `SEARCHING -> CANCELLED`
@@ -806,6 +807,11 @@ Backend side effects on completion:
 Auth required: yes
 
 Intended caller: owner
+
+Behavior:
+
+- Cancels a ride explicitly from the frontend
+- Supported while the trip is still `PENDING_ACCEPTANCE` or already `ASSIGNED`
 
 Response:
 
@@ -1220,12 +1226,12 @@ type RideAcceptedEvent = {
 
 #### `ride:declined`
 
-Sent to owner when driver declines or auto-times out.
+Sent to owner when driver declines.
 
 ```ts
 type RideDeclinedEvent = {
   tripId: string;
-  reason: 'declined' | 'timeout';
+  reason: 'declined';
   message: string;
 };
 ```
@@ -1381,7 +1387,6 @@ Possible actions currently include:
 - `created`
 - `accepted`
 - `declined`
-- `timed_out`
 - `status_changed`
 
 ```ts

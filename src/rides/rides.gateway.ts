@@ -136,7 +136,7 @@ export class RidesGateway
     }
   }
 
-  // Notify owner that driver declined or timed out
+  // Notify owner that driver declined
   notifyOwnerDriverDeclined(ownerId: string, data: any) {
     const socketId = this.ownerSockets.get(ownerId);
     if (socketId) {
