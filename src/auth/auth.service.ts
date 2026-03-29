@@ -13,6 +13,8 @@ import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PaymentsService } from '../payments/payments.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
+import { CloudinaryService } from '../cloudinary/cloudinary.service';
+
 
 
 @Injectable()
@@ -23,7 +25,8 @@ export class AuthService {
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     private adminRealtimeGateway: AdminRealtimeGateway,
-  ) {}
+    private cloudinaryService: CloudinaryService,
+  ) { }
 
   async register(dto: RegisterDto) {
     // 1. Check if email already exists
@@ -38,11 +41,11 @@ export class AuthService {
     if (dto.role === UserRole.DRIVER) {
 
       if (!dto.bankName || !dto.bankCode || !dto.accountNumber || !dto.accountName) {
-       throw new BadRequestException(
-      'Drivers must provide bank details: bankName, bankCode, accountNumber, accountName',
-       );
+        throw new BadRequestException(
+          'Drivers must provide bank details: bankName, bankCode, accountNumber, accountName',
+        );
+      }
     }
-}
 
     // 2. Hash the password — never store plain text
     const passwordHash = await bcrypt.hash(dto.password, 10);
@@ -52,6 +55,36 @@ export class AuthService {
     // Owners are auto-approved
     const approvalStatus =
       dto.role === UserRole.DRIVER ? 'PENDING' : 'APPROVED';
+
+    let licenseImageUrl: string | undefined;
+    let ninImageUrl: string | undefined;
+    let selfieImageUrl: string | undefined;
+
+    if (dto.role === UserRole.DRIVER) {
+      const driverId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+      if (dto.licenseImageUrl) {
+        licenseImageUrl = await this.cloudinaryService.uploadImage(
+          dto.licenseImageUrl,
+          'bica/licenses',
+          `license_${driverId}`,
+        );
+      }
+      if (dto.ninImageUrl) {
+        ninImageUrl = await this.cloudinaryService.uploadImage(
+          dto.ninImageUrl,
+          'bica/nin',
+          `nin_${driverId}`,
+        );
+      }
+      if (dto.selfieImageUrl) {
+        selfieImageUrl = await this.cloudinaryService.uploadImage(
+          dto.selfieImageUrl,
+          'bica/selfies',
+          `selfie_${driverId}`,
+        );
+      }
+    }
 
     // 4. Create the user
     const user = await this.prisma.user.create({
@@ -71,9 +104,9 @@ export class AuthService {
         age: dto.age,
         nin: dto.nin,
         transmission: dto.transmission,
-        licenseImageUrl: dto.licenseImageUrl,
-        ninImageUrl: dto.ninImageUrl,
-        selfieImageUrl: dto.selfieImageUrl,
+        licenseImageUrl,
+        ninImageUrl,
+        selfieImageUrl,
         backgroundCheckAccepted: dto.backgroundCheckAccepted,
         bankName: dto.bankName,
         bankCode: dto.bankCode,
@@ -86,14 +119,14 @@ export class AuthService {
     const token = await this.signToken(user.id, user.email, user.role);
 
     if (dto.role === UserRole.DRIVER) {
-  setImmediate(() => {
-    this.paymentsService
-      .createDriverSubAccount(user.id)
-      .catch((err) =>
-        console.error('Sub account creation failed:', err),
-      );
-  });
-}
+      setImmediate(() => {
+        this.paymentsService
+          .createDriverSubAccount(user.id)
+          .catch((err) =>
+            console.error('Sub account creation failed:', err),
+          );
+      });
+    }
 
     // 6. Return token and user (never return passwordHash)
     const response = {
@@ -164,9 +197,9 @@ export class AuthService {
 
   // Signs a JWT token with the user's id, email and role embedded
   private async signToken(id: string, email: string, role: UserRole) {
-  const payload = { sub: id, email, role };
+    const payload = { sub: id, email, role };
 
-  return this.jwt.signAsync(payload);
+    return this.jwt.signAsync(payload);
   }
 
   // Removes passwordHash before sending user data to frontend
@@ -175,5 +208,5 @@ export class AuthService {
     return rest;
   }
 
-  
+
 }

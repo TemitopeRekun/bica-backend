@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   NotFoundException,
   ForbiddenException,
   Logger,
@@ -10,6 +11,7 @@ import { UpdateLocationDto } from './dto/update-location.dto';
 import { UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
+import { CloudinaryService } from '../cloudinary/cloudinary.service';
 
 @Injectable()
 export class UsersService {
@@ -19,6 +21,7 @@ export class UsersService {
     private prisma: PrismaService,
     private ridesGateway: RidesGateway,
     private adminRealtimeGateway: AdminRealtimeGateway,
+    private cloudinaryService: CloudinaryService,
   ) { }
 
   // Get all users — admin only, with optional role filter
@@ -147,6 +150,54 @@ export class UsersService {
 
     this.adminRealtimeGateway.notifyUserUpdated('block_changed', updated);
     return updated;
+  }
+
+  async uploadAvatar(
+    userId: string,
+    image: string | Buffer,
+    mimetype?: string,
+  ) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+
+    if (!existingUser) {
+      throw new NotFoundException('User not found');
+    }
+
+    let avatarUrl: string;
+
+    if (typeof image === 'string') {
+      if (!image.trim()) {
+        throw new BadRequestException('image is required');
+      }
+
+      avatarUrl = await this.cloudinaryService.uploadImage(
+        image,
+        'bica/avatars',
+        `avatar_${userId}`,
+      );
+    } else {
+      if (mimetype && !mimetype.startsWith('image/')) {
+        throw new BadRequestException('Only image uploads are allowed');
+      }
+
+      avatarUrl = await this.cloudinaryService.uploadBuffer(
+        image,
+        'bica/avatars',
+        `avatar_${userId}`,
+      );
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: { avatarUrl },
+      select: { id: true, avatarUrl: true },
+    });
+
+    this.adminRealtimeGateway.notifyUserUpdated('avatar_updated', updatedUser);
+    return updatedUser;
   }
 
   // Driver: update live GPS location

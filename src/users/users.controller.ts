@@ -1,12 +1,17 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Get,
-  Patch,
   Param,
-  Body,
+  Patch,
+  Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
+import { UserRole } from '@prisma/client';
 import { UsersService } from './users.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
@@ -14,12 +19,32 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { UserRole } from '@prisma/client';
 
 @UseGuards(AuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private usersService: UsersService) { }
+  constructor(private usersService: UsersService) {}
+
+  @Patch('avatar')
+  @Post('upload-avatar')
+  async uploadAvatar(
+    @CurrentUser() user: any,
+    @Req() req: FastifyRequest,
+    @Body('image') image?: string,
+  ) {
+    if (req.isMultipart()) {
+      const file = await req.file();
+
+      if (!file) {
+        throw new BadRequestException('image file is required');
+      }
+
+      const buffer = await file.toBuffer();
+      return this.usersService.uploadAvatar(user.sub, buffer, file.mimetype);
+    }
+  
+    return this.usersService.uploadAvatar(user.sub, image ?? '');
+  }
 
   // Admin: list all users, optionally filter by role
   // GET /users
@@ -42,7 +67,6 @@ export class UsersController {
     const lng = pickupLng ? parseFloat(pickupLng) : undefined;
     return this.usersService.getAvailableDrivers(lat, lng, transmission);
   }
-
 
   // Admin: get single user profile
   // GET /users/:id

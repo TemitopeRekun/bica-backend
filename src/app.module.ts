@@ -9,6 +9,7 @@ import { AdminModule } from './admin/admin.module';
 import { ConfigModule } from '@nestjs/config';
 import { SettingsModule } from './settings/settings.module';
 import { RedisModule } from './redis/redis.module';
+import { CloudinaryModule } from './cloudinary/cloudinary.module';
 
 
 
@@ -22,6 +23,7 @@ import { RedisModule } from './redis/redis.module';
     UsersModule,
     RidesModule,
     PaymentsModule,
+    CloudinaryModule,
     LocationsModule,
     AdminModule,
     SettingsModule,
