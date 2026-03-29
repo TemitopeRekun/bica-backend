@@ -38,6 +38,12 @@ export class AuthService {
       throw new ConflictException('An account with this email already exists');
     }
 
+    if (dto.role === UserRole.ADMIN) {
+      throw new BadRequestException(
+        'Admin accounts cannot be created via public registration',
+      );
+    }
+
     if (dto.role === UserRole.DRIVER) {
 
       if (!dto.bankName || !dto.bankCode || !dto.accountNumber || !dto.accountName) {
