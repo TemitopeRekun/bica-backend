@@ -4,6 +4,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
 import { AppModule } from './app.module';
 
@@ -20,8 +21,17 @@ async function bootstrap() {
     },
   });
 
+  const config = app.get(ConfigService);
+  const corsOrigins = (
+    config.get<string>('CORS_ORIGINS') ??
+    'http://localhost:3001,http://localhost:5173'
+  )
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: ['http://localhost:3000', 'http://localhost:5173'],
+    origin: corsOrigins.includes('*') ? true : corsOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   });

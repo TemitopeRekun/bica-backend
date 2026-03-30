@@ -44,9 +44,6 @@ type GooglePlace = {
 export class LocationsService {
   private readonly logger = new Logger(LocationsService.name);
   private readonly googleBaseUrl = 'https://maps.googleapis.com/maps/api';
-  private readonly LAGOS_LAT = 6.5244;
-  private readonly LAGOS_LNG = 3.3792;
-  private readonly LAGOS_RADIUS = 50000;
   private readonly SEARCH_TTL = 86400;
   private readonly REVERSE_TTL = 604800;
   private readonly PLACE_DETAILS_TTL = 2592000;
@@ -116,49 +113,46 @@ export class LocationsService {
     }
 
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.error('GOOGLE_MAPS_API_KEY is not configured');
+      return [];
+    }
 
     try {
       const response = await axios.get(
         `${this.googleBaseUrl}/place/autocomplete/json`,
         {
-          params: {
-            input: query,
-            key: apiKey,
-            components: 'country:ng',
-            language: 'en',
-            types: 'geocode|establishment',
-            ...(hasBias
-              ? { locationbias: `circle:5000@${biasLat},${biasLng}` }
-              : {
-                  location: `${this.LAGOS_LAT},${this.LAGOS_LNG}`,
-                  radius: this.LAGOS_RADIUS,
-                }),
-          },
+          params: this.buildAutocompleteParams(query, apiKey, biasLat, biasLng),
         },
       );
 
       this.logger.log(`Google response status: ${response.data.status}`);
       if (response.data.error_message) {
-        this.logger.warn(`Google error message: ${response.data.error_message}`);
+        this.logger.warn(
+          `Google error message: ${response.data.error_message}`,
+        );
       }
 
-      if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
+      if (
+        response.data.status !== 'OK' &&
+        response.data.status !== 'ZERO_RESULTS'
+      ) {
         this.logger.error(
           `Google Places error: ${response.data.status} - ${response.data.error_message}`,
         );
         return [];
       }
 
-      const predictions = response.data.predictions.slice(0, 8);
-      const results = await Promise.all(
+      const predictions = (response.data.predictions ?? []).slice(0, 8);
+      const resolvedResults = await Promise.all(
         predictions.map(async (prediction: any) => {
-          const placeDetails = await this.getPlaceDetails(
-            prediction.place_id,
-            apiKey!,
+          const place = await this.resolvePredictionLocation(
+            prediction,
+            apiKey,
           );
 
-          if (placeDetails) {
-            return this.toLocationResult(placeDetails, {
+          if (place) {
+            return this.toLocationResult(place, {
               fallbackDisplayName:
                 prediction.structured_formatting?.main_text ||
                 prediction.description,
@@ -169,32 +163,21 @@ export class LocationsService {
             });
           }
 
-          return {
-            id: prediction.place_id,
-            display_name:
-              prediction.structured_formatting?.main_text ||
-              prediction.description,
-            description:
-              prediction.structured_formatting?.secondary_text ||
-              prediction.description,
-            lat: this.LAGOS_LAT,
-            lon: this.LAGOS_LNG,
-            category: this.inferCategory(prediction.types ?? []),
-            formatted_address: prediction.description,
-            street_number: null,
-            street: null,
-            area: null,
-            city: null,
-            lga: null,
-            state: null,
-            country: 'Nigeria',
-            place_types: prediction.types ?? [],
-          } satisfies LocationResult;
+          this.logger.warn(
+            `Skipping unresolved autocomplete prediction: ${prediction.place_id}`,
+          );
+          return null;
         }),
       );
 
-      await this.redis.set(cacheKey, results, this.SEARCH_TTL);
-      this.logger.log(`Cached ${results.length} results for: "${query}"`);
+      const results = resolvedResults.filter(
+        (result): result is LocationResult => result !== null,
+      );
+
+      if (results.length > 0) {
+        await this.redis.set(cacheKey, results, this.SEARCH_TTL);
+        this.logger.log(`Cached ${results.length} results for: "${query}"`);
+      }
 
       return results;
     } catch (error: any) {
@@ -213,6 +196,10 @@ export class LocationsService {
     }
 
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.error('GOOGLE_MAPS_API_KEY is not configured');
+      return this.buildFallbackLocation(lat, lng);
+    }
 
     try {
       const response = await axios.get(`${this.googleBaseUrl}/geocode/json`, {
@@ -223,11 +210,12 @@ export class LocationsService {
         },
       });
 
-      if (response.data.status !== 'OK' || !response.data.results.length) {
+      const place = response.data.results?.[0];
+      if (response.data.status !== 'OK' || !this.hasGeometryLocation(place)) {
         return this.buildFallbackLocation(lat, lng);
       }
 
-      const result = this.toLocationResult(response.data.results[0], {
+      const result = this.toLocationResult(place, {
         fallbackDisplayName: 'Current Location',
         fallbackDescription: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
         fallbackCategory: 'Residential',
@@ -261,6 +249,10 @@ export class LocationsService {
     }
 
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.error('GOOGLE_MAPS_API_KEY is not configured');
+      return this.haversineFallback(originLat, originLng, destLat, destLng);
+    }
 
     try {
       const response = await axios.get(
@@ -335,13 +327,44 @@ export class LocationsService {
       );
 
       const place = response.data.result;
-      if (!place?.geometry?.location) return null;
+      if (!this.hasGeometryLocation(place)) return null;
 
       await this.redis.set(cacheKey, place, this.PLACE_DETAILS_TTL);
       return place;
     } catch (error: any) {
       this.logger.warn(
         `Place details lookup failed for ${placeId}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  private async geocodePlaceId(
+    placeId: string,
+    apiKey: string,
+  ): Promise<GooglePlace | null> {
+    const cacheKey = `location:place:geocode:${placeId}`;
+    const cached = await this.redis.get<GooglePlace>(cacheKey);
+
+    if (cached) return cached;
+
+    try {
+      const response = await axios.get(`${this.googleBaseUrl}/geocode/json`, {
+        params: {
+          place_id: placeId,
+          key: apiKey,
+          language: 'en',
+        },
+      });
+
+      const place = response.data.results?.[0];
+      if (!this.hasGeometryLocation(place)) return null;
+
+      await this.redis.set(cacheKey, place, this.PLACE_DETAILS_TTL);
+      return place;
+    } catch (error: any) {
+      this.logger.warn(
+        `Geocode fallback failed for ${placeId}: ${error.message}`,
       );
       return null;
     }
@@ -359,6 +382,10 @@ export class LocationsService {
   ): Promise<LocationResult[]> {
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
     const hasBias = biasLat !== undefined && biasLng !== undefined;
+    if (!apiKey) {
+      this.logger.error('GOOGLE_MAPS_API_KEY is not configured');
+      return [];
+    }
 
     try {
       const response = await axios.get(
@@ -369,8 +396,12 @@ export class LocationsService {
             key: apiKey,
             language: 'en',
             region: 'ng',
-            location: `${biasLat ?? this.LAGOS_LAT},${biasLng ?? this.LAGOS_LNG}`,
-            radius: hasBias ? 5000 : this.LAGOS_RADIUS,
+            ...(hasBias
+              ? {
+                  location: `${biasLat},${biasLng}`,
+                  radius: 5000,
+                }
+              : {}),
           },
         },
       );
@@ -389,9 +420,17 @@ export class LocationsService {
       const detailedResults = await Promise.all(
         (response.data.results ?? []).slice(0, 8).map(async (result: any) => {
           const placeDetails = result.place_id
-            ? await this.getPlaceDetails(result.place_id, apiKey!)
+            ? await this.getPlaceDetails(result.place_id, apiKey)
             : null;
-          const parsedResult = this.toLocationResult(placeDetails ?? result, {
+          const resolvedPlace = placeDetails ?? result;
+          if (!this.hasGeometryLocation(resolvedPlace)) {
+            this.logger.warn(
+              `Skipping nearby category result without geometry: ${result.place_id ?? result.name}`,
+            );
+            return null;
+          }
+
+          const parsedResult = this.toLocationResult(resolvedPlace, {
             fallbackDisplayName: result.name,
             fallbackDescription:
               result.formatted_address ?? result.vicinity ?? result.name,
@@ -415,9 +454,11 @@ export class LocationsService {
       );
 
       return detailedResults
-        .sort(
-          (a: any, b: any) => (a.__distanceKm ?? 0) - (b.__distanceKm ?? 0),
+        .filter(
+          (result): result is LocationResult & { __distanceKm?: number } =>
+            result !== null,
         )
+        .sort((a: any, b: any) => (a.__distanceKm ?? 0) - (b.__distanceKm ?? 0))
         .map(({ __distanceKm, ...result }: any) => result);
     } catch (error: any) {
       this.logger.error(
@@ -466,9 +507,7 @@ export class LocationsService {
       formattedAddress ||
       'Selected Location';
     const description =
-      [area, city || lga, state]
-        .filter(Boolean)
-        .join(', ') ||
+      [area, city || lga, state].filter(Boolean).join(', ') ||
       fallback?.fallbackDescription ||
       formattedAddress ||
       displayName;
@@ -478,8 +517,8 @@ export class LocationsService {
       id: place.place_id ?? displayName,
       display_name: displayName,
       description,
-      lat: place.geometry?.location?.lat ?? this.LAGOS_LAT,
-      lon: place.geometry?.location?.lng ?? this.LAGOS_LNG,
+      lat: place.geometry!.location!.lat!,
+      lon: place.geometry!.location!.lng!,
       category: fallback?.fallbackCategory ?? this.inferCategory(placeTypes),
       formatted_address: formattedAddress || undefined,
       street_number: streetNumber,
@@ -519,6 +558,59 @@ export class LocationsService {
   ): string {
     const component = components.find((c) => c.types.includes(type));
     return component?.long_name || '';
+  }
+
+  private buildAutocompleteParams(
+    query: string,
+    apiKey: string,
+    biasLat?: number,
+    biasLng?: number,
+  ) {
+    const hasBias = biasLat !== undefined && biasLng !== undefined;
+
+    return {
+      input: query,
+      key: apiKey,
+      components: 'country:ng',
+      language: 'en',
+      region: 'ng',
+      ...(hasBias
+        ? {
+            locationbias: `circle:5000@${biasLat},${biasLng}`,
+            origin: `${biasLat},${biasLng}`,
+          }
+        : {}),
+    };
+  }
+
+  private async resolvePredictionLocation(
+    prediction: { place_id?: string },
+    apiKey: string,
+  ): Promise<GooglePlace | null> {
+    if (!prediction.place_id) return null;
+
+    const placeDetails = await this.getPlaceDetails(
+      prediction.place_id,
+      apiKey,
+    );
+    if (this.hasGeometryLocation(placeDetails)) {
+      return placeDetails;
+    }
+
+    return this.geocodePlaceId(prediction.place_id, apiKey);
+  }
+
+  private hasGeometryLocation(
+    place: GooglePlace | null | undefined,
+  ): place is GooglePlace & {
+    geometry: { location: { lat: number; lng: number } };
+  } {
+    return (
+      place !== null &&
+      place !== undefined &&
+      typeof place.geometry?.location?.lat === 'number' &&
+      typeof place.geometry?.location?.lng === 'number'
+    );
   }
 
   private inferCategory(types: string[]): string {

@@ -1,14 +1,9 @@
-import {
-  Controller,
-  Get,
-  Query,
-  BadRequestException,
-} from '@nestjs/common';
+import { Controller, Get, Query, BadRequestException } from '@nestjs/common';
 import { LocationsService } from './locations.service';
 
 @Controller('locations')
 export class LocationsController {
-  constructor(private locationsService: LocationsService) { }
+  constructor(private locationsService: LocationsService) {}
 
   // Public — no auth needed
   // Used on the search screen before and after login
@@ -20,22 +15,28 @@ export class LocationsController {
     @Query('biasLng') biasLng?: string,
   ) {
     if (!query || query.trim().length < 2) {
-      throw new BadRequestException('Search query must be at least 2 characters');
+      throw new BadRequestException(
+        'Search query must be at least 2 characters',
+      );
     }
-    const lat = biasLat ? parseFloat(biasLat) : undefined;
-    const lng = biasLng ? parseFloat(biasLng) : undefined;
+
+    if ((biasLat && !biasLng) || (!biasLat && biasLng)) {
+      throw new BadRequestException(
+        'biasLat and biasLng must be provided together',
+      );
+    }
+
+    const lat = this.parseOptionalCoordinate(biasLat, 'biasLat', -90, 90);
+    const lng = this.parseOptionalCoordinate(biasLng, 'biasLng', -180, 180);
+
     return this.locationsService.search(query, lat, lng);
   }
-
 
   // Public — no auth needed
   // Used when driver sets location or trip records arrival address
   // GET /locations/reverse?lat=6.4549&lng=3.4246
   @Get('reverse')
-  async reverseGeocode(
-    @Query('lat') lat: string,
-    @Query('lng') lng: string,
-  ) {
+  async reverseGeocode(@Query('lat') lat: string, @Query('lng') lng: string) {
     const latNum = parseFloat(lat);
     const lngNum = parseFloat(lng);
 
@@ -70,5 +71,27 @@ export class LocationsController {
     }
 
     return this.locationsService.getRouteDetails(oLat, oLng, dLat, dLng);
+  }
+
+  private parseOptionalCoordinate(
+    value: string | undefined,
+    fieldName: string,
+    min: number,
+    max: number,
+  ): number | undefined {
+    if (value === undefined) return undefined;
+
+    const parsed = parseFloat(value);
+    if (!Number.isFinite(parsed)) {
+      throw new BadRequestException(`${fieldName} must be a valid number`);
+    }
+
+    if (parsed < min || parsed > max) {
+      throw new BadRequestException(
+        `${fieldName} must be between ${min} and ${max}`,
+      );
+    }
+
+    return parsed;
   }
 }

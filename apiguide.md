@@ -14,7 +14,8 @@ This guide documents the backend contract the frontend should use for the curren
 - Validation: global `ValidationPipe`
 - Extra request fields are rejected
 - Unknown body/query fields can trigger `400 Bad Request`
-- CORS currently allows:
+- CORS allowlist is controlled by `CORS_ORIGINS`
+- Default allowed origins:
 - `http://localhost:3000`
 - `http://localhost:5173`
 
@@ -466,6 +467,7 @@ Behavior:
 
 - For normal search text, backend uses Google Places Autocomplete plus Place Details
 - Each result is enriched with structured Google address parts when available
+- When no bias coordinates are provided, search is country-restricted to Nigeria without a hard-coded Lagos center
 - For category-like queries such as `hotel`, `shopping mall`, `restaurant`, `airport`, backend uses nearby text search plus Place Details enrichment
 - If `biasLat` and `biasLng` are provided, nearby category search is centered around them and results are sorted nearest-first from that pickup point
 - Search results are cached in Redis
@@ -548,6 +550,63 @@ Frontend note:
 
 - Use this after pickup and destination are selected
 - Send `distanceKm` and `estimatedMins` from this response into ride creation
+
+### Recommended Frontend Location Flow
+
+Use this flow to get the richest results and avoid broken location UX:
+
+1. Pickup text search
+- Do not call search until the query has at least 2 characters
+- Debounce requests on the frontend
+- If device GPS is already available, call:
+- `GET /locations/search?q=<pickupQuery>&biasLat=<deviceLat>&biasLng=<deviceLng>`
+- If device GPS is not available yet, call:
+- `GET /locations/search?q=<pickupQuery>`
+
+2. Use my location
+- Ask the device for GPS coordinates in the frontend
+- The backend cannot detect the user's location by itself
+- Once GPS returns, call:
+- `GET /locations/reverse?lat=<deviceLat>&lng=<deviceLng>`
+- Use that response as the selected pickup location
+- Keep the same pickup coordinates in frontend state for:
+- destination search bias
+- category search bias
+- nearby driver lookup
+- route calculation
+
+3. Destination text search
+- After pickup has been selected, always bias destination search from the pickup point:
+- `GET /locations/search?q=<destinationQuery>&biasLat=<pickupLat>&biasLng=<pickupLng>`
+
+4. Category chips
+- For destination shortcuts like `hotel`, `restaurant`, `shopping mall`, `airport`, call:
+- `GET /locations/search?q=<category>&biasLat=<pickupLat>&biasLng=<pickupLng>`
+- This makes category results nearest-first from the selected pickup point
+
+5. Nearby drivers
+- After pickup is selected, call:
+- `GET /users/drivers/available?pickupLat=<pickupLat>&pickupLng=<pickupLng>`
+- This lets the backend sort drivers nearest-first to the pickup point
+
+6. Route and fare preview
+- After pickup and destination are both selected, call:
+- `GET /locations/route?originLat=<pickupLat>&originLng=<pickupLng>&destLat=<destLat>&destLng=<destLng>`
+- Use that response for distance, ETA, and fare preview before ride creation
+
+7. Display rules
+- Prefer `formatted_address` for the main visible address when available
+- For richer UI, use `street_number`, `street`, `area`, `city`, `lga`, `state`, and `country`
+- Not every Google place has every component, so frontend must handle missing fields gracefully
+
+8. Failure handling
+- If geolocation permission is denied, fall back to manual pickup search
+- If `GET /locations/reverse` returns only coordinate-style fallback text, still allow the pickup but keep the UI label as `Current Location`
+- Always send `biasLat` and `biasLng` together or omit both
+- Cancel stale autocomplete requests on the frontend so older responses do not overwrite newer input
+
+9. Environment setup
+- If the frontend is not running on `http://localhost:3000` or `http://localhost:5173`, set backend `CORS_ORIGINS` to include the real frontend origin
 
 ## Rides Endpoints
 
