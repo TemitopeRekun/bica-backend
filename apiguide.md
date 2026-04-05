@@ -1277,6 +1277,16 @@ type TrackDriverEvent = {
 };
 ```
 
+#### `driver:arrived`
+
+Used by the assigned driver to signal arrival at the pickup location.
+
+```ts
+type DriverArrivedEvent = {
+  tripId: string;
+};
+```
+
 ### Server -> Client Events
 
 #### `ride:assigned`
@@ -1355,6 +1365,24 @@ type LocationUpdatedEvent = {
   timestamp: string;
 };
 ```
+
+#### `ride:progress`
+
+Unified event sent to the trip owner at various milestones.
+
+```ts
+type RideProgressEvent = {
+  tripId: string;
+  milestone: 'assigned' | 'arrived' | 'in_progress' | 'completed';
+  timestamp: string;
+  status?: string; // Current TripStatus
+};
+```
+
+- `assigned`: Triggered when driver accepts (heading to pickup).
+- `arrived`: Triggered by `driver:arrived` socket event.
+- `in_progress`: Triggered when trip starts.
+- `completed`: Triggered when trip is marked completed.
 
 #### `driver:online`
 

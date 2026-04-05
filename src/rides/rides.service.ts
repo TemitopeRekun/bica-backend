@@ -72,7 +72,15 @@ export class RidesService {
       estimatedArrivalMins: 5, // could calculate this properly
     });
 
+    this.gateway.notifyOwnerRideProgress(trip.ownerId, {
+      tripId: updated.id,
+      milestone: 'assigned',
+      timestamp: new Date().toISOString(),
+      status: updated.status,
+    });
+
     this.adminRealtimeGateway.notifyTripUpdated('accepted', updated);
+
     return updated;
   }
 
@@ -529,6 +537,24 @@ export class RidesService {
     });
 
     this.adminRealtimeGateway.notifyTripUpdated('status_changed', updated);
+
+    // Ride progress sync for owners
+    if (updated.status === TripStatus.IN_PROGRESS) {
+      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
+        tripId: updated.id,
+        milestone: 'in_progress',
+        timestamp: new Date().toISOString(),
+        status: updated.status,
+      });
+    } else if (updated.status === TripStatus.COMPLETED) {
+      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
+        tripId: updated.id,
+        milestone: 'completed',
+        timestamp: new Date().toISOString(),
+        status: updated.status,
+      });
+    }
+
     return updated;
   }
 

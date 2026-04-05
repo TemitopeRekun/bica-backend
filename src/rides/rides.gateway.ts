@@ -154,4 +154,47 @@ export class RidesGateway
       this.server.to(socketId).emit('payment:updated', data);
     }
   }
+
+  // Notify owner of ride progress (milestones)
+  notifyOwnerRideProgress(ownerId: string, data: {
+    tripId: string;
+    milestone: 'assigned' | 'arrived' | 'in_progress' | 'completed';
+    timestamp: string;
+    status?: string;
+  }) {
+    const socketId = this.ownerSockets.get(ownerId);
+    if (socketId) {
+      this.server.to(socketId).emit('ride:progress', data);
+    }
+  }
+
+  @SubscribeMessage('driver:arrived')
+  async handleDriverArrived(
+    @MessageBody() data: { tripId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    // Determine which driver is sending this
+    let driverId: string | undefined;
+    for (const [id, socketId] of this.driverSockets.entries()) {
+      if (socketId === client.id) {
+        driverId = id;
+        break;
+      }
+    }
+
+    if (!driverId) return;
+
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: data.tripId },
+      select: { ownerId: true, driverId: true },
+    });
+
+    if (trip && trip.driverId === driverId) {
+      this.notifyOwnerRideProgress(trip.ownerId, {
+        tripId: data.tripId,
+        milestone: 'arrived',
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
 }
