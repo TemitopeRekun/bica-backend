@@ -3,19 +3,20 @@ import {
   ConflictException,
   UnauthorizedException,
   BadRequestException,
-  NotFoundException, Inject, forwardRef,
+  NotFoundException, 
+  Inject, 
+  forwardRef,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { UserRole } from '@prisma/client';
+import { UserRole, ApprovalStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PaymentsService } from '../payments/payments.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
-
-
 
 @Injectable()
 export class AuthService {
@@ -121,8 +122,11 @@ export class AuthService {
       },
     });
 
-    // 5. Issue JWT token immediately after registration
-    const token = await this.signToken(user.id, user.email, user.role);
+    // 5. Issue JWT token for non-driver or handle response carefully
+    let token: string | undefined;
+    if (user.role !== UserRole.DRIVER) {
+      token = await this.signToken(user.id, user.email, user.role);
+    }
 
     if (dto.role === UserRole.DRIVER) {
       setImmediate(() => {
@@ -134,11 +138,16 @@ export class AuthService {
       });
     }
 
-    // 6. Return token and user (never return passwordHash)
-    const response = {
-      token,
+    // 6. Return response (with token for owners, without for drivers)
+    const response: any = {
       user: this.sanitizeUser(user),
     };
+
+    if (token) {
+      response.token = token;
+    } else if (user.role === UserRole.DRIVER) {
+      response.message = 'Registration successful! Your driver account is pending admin approval.';
+    }
 
     if (user.role === UserRole.DRIVER) {
       this.adminRealtimeGateway.notifyPendingDriver({
@@ -147,7 +156,7 @@ export class AuthService {
         email: user.email,
         phone: user.phone,
         role: user.role,
-        approvalStatus: user.approvalStatus,
+        approvalStatus: user.approvalStatus as ApprovalStatus,
         createdAt: user.createdAt,
       });
     }
@@ -180,7 +189,20 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // 4. Issue JWT token
+    // 4. Check driver approval status
+    if (user.role === UserRole.DRIVER) {
+      if (user.approvalStatus === ApprovalStatus.PENDING) {
+        throw new ForbiddenException('Your driver account is pending admin approval.');
+      }
+      if (user.approvalStatus === ApprovalStatus.REJECTED) {
+        throw new ForbiddenException('Your driver application was rejected. Please contact support.');
+      }
+      if (user.approvalStatus !== ApprovalStatus.APPROVED) {
+        throw new ForbiddenException('Access denied. Driver account not approved.');
+      }
+    }
+
+    // 5. Issue JWT token
     const token = await this.signToken(user.id, user.email, user.role);
 
     return {
@@ -198,6 +220,11 @@ export class AuthService {
       throw new NotFoundException('User not found');
     }
 
+    // Extra safety check for drivers
+    if (user.role === UserRole.DRIVER && user.approvalStatus !== ApprovalStatus.APPROVED) {
+      throw new ForbiddenException('Your driver account is not approved.');
+    }
+
     return this.sanitizeUser(user);
   }
 
@@ -213,6 +240,4 @@ export class AuthService {
     const { passwordHash, ...rest } = user;
     return rest;
   }
-
-
 }

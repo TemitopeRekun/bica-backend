@@ -17,6 +17,7 @@ import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -101,6 +102,7 @@ export class UsersController {
   // Driver: update their own live location
   // PATCH /users/location
   @Roles(UserRole.DRIVER)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('location')
   updateLocation(
     @CurrentUser() user: any,
@@ -112,6 +114,7 @@ export class UsersController {
   // Driver goes online or offline
   // PATCH /users/online
   @Roles(UserRole.DRIVER)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('online')
   updateOnlineStatus(
     @CurrentUser() user: any,

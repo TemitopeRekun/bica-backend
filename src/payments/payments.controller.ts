@@ -12,6 +12,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
 
@@ -57,14 +58,14 @@ export class PaymentsController {
     return this.paymentsService.getPaymentStatus(tripId, user.sub, user.role);
   }
 
-  @UseGuards(AuthGuard, RolesGuard)
+  @UseGuards(AuthGuard, RolesGuard, ApprovedDriverGuard)
   @Roles(UserRole.DRIVER)
   @Get('wallet')
   getWallet(@CurrentUser() user: any) {
     return this.paymentsService.getWalletSummary(user.sub);
   }
 
-  @UseGuards(AuthGuard, RolesGuard)
+  @UseGuards(AuthGuard, RolesGuard, ApprovedDriverGuard)
   @Roles(UserRole.DRIVER)
   @Post('sub-account/retry')
   retryOwnSubAccount(@CurrentUser() user: any) {

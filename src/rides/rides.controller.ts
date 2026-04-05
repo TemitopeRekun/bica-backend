@@ -12,6 +12,7 @@ import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
@@ -49,6 +50,8 @@ export class RidesController {
 
   // Driver accepts a ride request
   // POST /rides/:id/accept
+  @Roles(UserRole.DRIVER)
+  @UseGuards(ApprovedDriverGuard)
   @Post(':id/accept')
   acceptRide(
     @Param('id') id: string,
@@ -59,6 +62,8 @@ export class RidesController {
 
   // Driver declines a ride request
   // POST /rides/:id/decline
+  @Roles(UserRole.DRIVER)
+  @UseGuards(ApprovedDriverGuard)
   @Post(':id/decline')
   declineRide(
     @Param('id') id: string,
@@ -79,6 +84,8 @@ export class RidesController {
 
   // Driver updates trip status
   // PATCH /rides/:id/status
+  @Roles(UserRole.DRIVER)
+  @UseGuards(ApprovedDriverGuard)
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,
