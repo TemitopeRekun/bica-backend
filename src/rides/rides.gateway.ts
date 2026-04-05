@@ -65,19 +65,15 @@ export class RidesGateway
     console.log(`Owner ${data.ownerId} registered socket ${client.id}`);
   }
 
-  @SubscribeMessage('driver:location')
-  async handleLocationUpdate(
+  @SubscribeMessage('driverlocation')
+  handleLocationUpdate(
     @MessageBody() data: { driverId: string; lat: number; lng: number },
   ) {
-    await this.prisma.user.update({
-      where: { id: data.driverId },
-      data: {
-        locationLat: data.lat,
-        locationLng: data.lng,
-      },
-    });
+    if (!Number.isFinite(data.lat) || !Number.isFinite(data.lng)) {
+      return;
+    }
 
-    this.server.to(`driver:${data.driverId}`).emit('location:updated', {
+    this.server.to(`driver:${data.driverId}`).emit('locationupdated', {
       driverId: data.driverId,
       lat: data.lat,
       lng: data.lng,
@@ -85,7 +81,7 @@ export class RidesGateway
     });
   }
 
-  @SubscribeMessage('track:driver')
+  @SubscribeMessage('trackdriver')
   handleTrackDriver(
     @MessageBody() data: { driverId: string },
     @ConnectedSocket() client: Socket,

@@ -407,7 +407,7 @@ type UpdateLocationResponse = {
 Frontend note:
 
 - Updating location through HTTP is what affects driver discoverability for ride matching
-- Socket `driver:location` is for live tracking events, not database persistence
+- Socket `driverlocation` is for live tracking events, not database persistence
 
 ### `PATCH /users/online`
 
@@ -1227,9 +1227,9 @@ type OwnerRegisterEvent = {
 };
 ```
 
-#### `driver:location`
+#### `driverlocation`
 
-Live tracking + persistence event.
+Live tracking broadcast only.
 
 ```ts
 type DriverLocationEvent = {
@@ -1239,12 +1239,10 @@ type DriverLocationEvent = {
 };
 ```
 
-Important:
+- This does NOT update the database; use `PATCH /users/location` for persistence.
+- This emits `locationupdated` to clients tracking that driver.
 
-- This updates `User.locationLat` and `User.locationLng` in the database
-- This also emits `location:updated` to clients tracking that driver
-
-#### `track:driver`
+#### `trackdriver`
 
 Used by clients that want live updates for one driver.
 
@@ -1320,9 +1318,9 @@ type PaymentUpdatedEvent = {
 };
 ```
 
-#### `location:updated`
+#### `locationupdated`
 
-Sent to clients who joined `track:driver`.
+Sent to clients who joined `trackdriver`.
 
 ```ts
 type LocationUpdatedEvent = {
@@ -1527,7 +1525,7 @@ Examples of important backend messages:
 - After admin socket connect, emit `admin:register`
 - Driver app should do both:
 - `PATCH /users/location` if using the HTTP update flow directly
-- `socket.emit('driver:location', ...)` for live map tracking and latest-location persistence
+- `socket.emit('driverlocation', ...)` for live map tracking
 - Owner app should use `GET /users/drivers/available` before ride creation
 - Owner app should use `GET /locations/route` before creating a ride
 - Category destination search should call `GET /locations/search?q=<category>&biasLat=<pickupLat>&biasLng=<pickupLng>`
