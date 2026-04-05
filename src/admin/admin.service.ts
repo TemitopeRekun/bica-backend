@@ -25,7 +25,7 @@ export class AdminService {
   }
 
   async getUsers() {
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where: {
         role: { in: ['DRIVER', 'OWNER'] },
       },
@@ -53,11 +53,18 @@ export class AdminService {
         walletBalance: true,
         locationLat: true,
         locationLng: true,
+        bankName: true,
+        bankCode: true,
+        accountNumber: true,
+        accountName: true,
+        monnifySubAccountCode: true,
         createdAt: true,
         updatedAt: true,
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return users.map((u) => this.mapAdminUser(u));
   }
 
   async getTrips() {
@@ -102,5 +109,14 @@ export class AdminService {
       },
       orderBy: { requestedAt: 'desc' },
     });
+  }
+
+  private mapAdminUser(user: any) {
+    return {
+      ...user,
+      subAccountActive: !!user.monnifySubAccountCode,
+      canRetrySubAccountSetup:
+        !user.monnifySubAccountCode && !!user.bankCode && !!user.accountNumber,
+    };
   }
 }

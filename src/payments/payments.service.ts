@@ -213,7 +213,20 @@ export class PaymentsService {
   }
 
   async retryDriverSubAccount(driverId: string) {
-    return this.ensureDriverSubAccount(driverId);
+    const result = await this.ensureDriverSubAccount(driverId);
+
+    const messageMap = {
+      already_configured: 'Sub account is already configured.',
+      created: 'Sub account created successfully.',
+      recovered_existing:
+        'Existing sub account recovered and linked successfully.',
+    };
+
+    return {
+      ...result,
+      subAccountActive: true,
+      message: messageMap[result.status] || 'Sub account setup complete.',
+    };
   }
 
   async createDriverSubAccount(driverId: string): Promise<void> {

@@ -1079,6 +1079,31 @@ Frontend note:
 - This clears the driver's tracked wallet balances for a new period
 - It is an admin ledger reset action, not a driver payout action
 
+### `POST /payments/sub-account/retry/:driverId`
+
+Auth required: yes
+
+Role required: `ADMIN`
+
+Request body: none
+
+Behavior:
+
+- Retries Monnify sub-account creation for a driver who is missing it
+- Returns current payout status of the driver
+
+Response:
+
+```ts
+type RetrySubAccountResponse = {
+  driverId: string;
+  subAccountCode: string;
+  status: 'already_configured' | 'created' | 'recovered_existing';
+  subAccountActive: boolean;
+  message: string;
+};
+```
+
 ## Settings Endpoints
 
 ### `GET /settings`
@@ -1157,9 +1182,9 @@ type AdminDashboardResponse = {
     licenseImageUrl: string | null;
     ninImageUrl: string | null;
     selfieImageUrl: string | null;
-    walletBalance: number;
-    locationLat: number | null;
-    locationLng: number | null;
+    monnifySubAccountCode: string | null;
+    subAccountActive: boolean;
+    canRetrySubAccountSetup: boolean;
     createdAt: string;
     updatedAt: string;
   }>;
