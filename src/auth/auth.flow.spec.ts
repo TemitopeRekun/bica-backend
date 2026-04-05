@@ -6,7 +6,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { UserRole, ApprovalStatus } from '@prisma/client';
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 
 describe('AuthService (Driver Approval Flow)', () => {
@@ -124,7 +124,7 @@ describe('AuthService (Driver Approval Flow)', () => {
       await expect(service.login({
         email: 'driver@test.com',
         password: 'password',
-      })).rejects.toThrow(ForbiddenException);
+      })).rejects.toThrow('pending admin approval');
     });
 
     it('should deny login for a REJECTED driver', async () => {
@@ -140,7 +140,7 @@ describe('AuthService (Driver Approval Flow)', () => {
       await expect(service.login({
         email: 'driver@test.com',
         password: 'password',
-      })).rejects.toThrow(ForbiddenException);
+      })).rejects.toThrow('rejected');
     });
 
     it('should allow login for an APPROVED driver', async () => {
@@ -173,7 +173,42 @@ describe('AuthService (Driver Approval Flow)', () => {
       await expect(service.login({
         email: 'user@test.com',
         password: 'password',
-      })).rejects.toThrow(UnauthorizedException);
+      })).rejects.toThrow('suspended');
+    });
+  });
+
+  describe('getMe', () => {
+    it('should allow approved drivers', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'driver-123',
+        role: UserRole.DRIVER,
+        approvalStatus: ApprovalStatus.APPROVED,
+      });
+
+      const result = await service.getMe('driver-123');
+      expect(result).toBeDefined();
+    });
+
+    it('should reject pending drivers in getMe', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'driver-123',
+        role: UserRole.DRIVER,
+        approvalStatus: ApprovalStatus.PENDING,
+      });
+
+      await expect(service.getMe('driver-123'))
+        .rejects.toThrow('pending admin approval');
+    });
+
+    it('should reject rejected drivers in getMe', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'driver-123',
+        role: UserRole.DRIVER,
+        approvalStatus: ApprovalStatus.REJECTED,
+      });
+
+      await expect(service.getMe('driver-123'))
+        .rejects.toThrow('rejected');
     });
   });
 });

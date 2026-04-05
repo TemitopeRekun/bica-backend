@@ -221,8 +221,16 @@ export class AuthService {
     }
 
     // Extra safety check for drivers
-    if (user.role === UserRole.DRIVER && user.approvalStatus !== ApprovalStatus.APPROVED) {
-      throw new ForbiddenException('Your driver account is not approved.');
+    if (user.role === UserRole.DRIVER) {
+      if (user.approvalStatus === ApprovalStatus.PENDING) {
+        throw new ForbiddenException('Your driver account is pending admin approval.');
+      }
+      if (user.approvalStatus === ApprovalStatus.REJECTED) {
+        throw new ForbiddenException('Your driver application was rejected. Please contact support.');
+      }
+      if (user.approvalStatus !== ApprovalStatus.APPROVED) {
+        throw new ForbiddenException('Access denied. Driver account not approved.');
+      }
     }
 
     return this.sanitizeUser(user);

@@ -84,7 +84,6 @@ export class RidesController {
 
   // Driver updates trip status
   // PATCH /rides/:id/status
-  @Roles(UserRole.DRIVER)
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/status')
   updateStatus(
