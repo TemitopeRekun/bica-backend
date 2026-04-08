@@ -11,11 +11,13 @@ import { SettingsModule } from './settings/settings.module';
 import { RedisModule } from './redis/redis.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
 import { BullModule } from '@nestjs/bullmq';
 import { NotificationsModule } from './notifications/notifications.module';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 @Module({
   imports: [
@@ -32,6 +34,16 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor';
     AdminModule,
     SettingsModule,
     RedisModule,
+    LoggerModule.forRoot({
+      pinoHttp: {
+        transport: process.env.NODE_ENV !== 'production'
+          ? { target: 'pino-pretty', options: { colorize: true } }
+          : undefined,
+        level: process.env.NODE_ENV !== 'production' ? 'debug' : 'info',
+        // Redact sensitive fields from logs
+        redact: ['*.password', '*.token', '*.apiKey', '*.secret'],
+      },
+    }),
     ThrottlerModule.forRoot([
       {
         name: 'short',
@@ -68,6 +80,10 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor';
     NotificationsModule,
   ],
   providers: [
+    {
+      provide: APP_FILTER,
+      useClass: GlobalExceptionFilter,
+    },
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,

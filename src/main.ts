@@ -8,13 +8,48 @@ import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
-import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+
+import { Logger } from 'nestjs-pino';
+import * as Sentry from '@sentry/nestjs';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 async function bootstrap() {
+  const adapter = new FastifyAdapter({ logger: false, bodyLimit: 10 * 1024 * 1024 });
+  
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ logger: false, bodyLimit: 10 * 1024 * 1024 }),
+    adapter,
+    { bufferLogs: true },
   );
+
+  const configService = app.get(ConfigService);
+  const sentryDsn = configService.get<string>('SENTRY_DSN');
+
+  if (sentryDsn) {
+    Sentry.init({
+      dsn: sentryDsn,
+      environment: configService.get<string>('NODE_ENV') || 'development',
+      integrations: [
+        nodeProfilingIntegration(),
+      ],
+      // Performance Monitoring
+      tracesSampleRate: 1.0, 
+      profilesSampleRate: 1.0,
+      // Security: Sanitize sensitive data before sending to Sentry
+      beforeSend(event) {
+        if (event.request?.data) {
+          const data = event.request.data as any;
+          const sensitiveFields = ['password', 'token', 'bica_token', 'apiKey', 'secret'];
+          sensitiveFields.forEach(field => {
+            if (data[field]) data[field] = '[REDACTED]';
+          });
+        }
+        return event;
+      },
+    });
+  }
+
+  app.useLogger(app.get(Logger));
 
   await app.register(helmet, {
     contentSecurityPolicy: {

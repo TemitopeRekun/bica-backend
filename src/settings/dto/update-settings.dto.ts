@@ -1,4 +1,4 @@
-import { IsNumber, IsBoolean, IsOptional, Min, Max } from 'class-validator';
+import { IsNumber, IsBoolean, IsOptional, Min, Max, IsString } from 'class-validator';
 
 export class UpdateSettingsDto {
   @IsOptional()
@@ -25,4 +25,12 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   autoApprove?: boolean;
+
+  @IsOptional()
+  @IsString()
+  minAppVersion?: string;
+
+  @IsOptional()
+  @IsString()
+  latestAppVersion?: string;
 }

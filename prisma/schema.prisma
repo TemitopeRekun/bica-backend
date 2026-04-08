@@ -154,9 +154,11 @@ model SystemSettings {
   baseFare    Float    @default(500)
   pricePerKm  Float    @default(100)
   timeRate    Float    @default(50)
-  commission  Float    @default(25)
-  autoApprove Boolean  @default(false)
-  updatedAt   DateTime @updatedAt
+  commission       Float    @default(25)
+  autoApprove      Boolean  @default(false)
+  minAppVersion    String   @default("1.0.0")
+  latestAppVersion String   @default("1.0.0")
+  updatedAt        DateTime @updatedAt
   updatedById String?
 }
 
