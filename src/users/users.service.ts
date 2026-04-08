@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   BadRequestException,
   NotFoundException,
@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
+import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
@@ -24,7 +25,7 @@ export class UsersService {
     private cloudinaryService: CloudinaryService,
   ) { }
 
-  // Get all users — admin only, with optional role filter
+  // Get all users â€” admin only, with optional role filter
   async findAll(role?: UserRole) {
     return this.prisma.user.findMany({
       where: role ? { role } : undefined,
@@ -292,7 +293,7 @@ export class UsersService {
         };
       });
 
-      // Sort by distance — nearest first
+      // Sort by distance â€” nearest first
       withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
       return withDistance;
     }
@@ -321,5 +322,19 @@ export class UsersService {
       Math.sin(dLng / 2) *
       Math.sin(dLng / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+  // Update user's FCM token for push notifications
+  async updateFcmToken(id: string, dto: UpdateFcmTokenDto) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    return this.prisma.user.update({
+      where: { id },
+      data: {
+        fcmToken: dto.token,
+        deviceType: dto.deviceType,
+      },
+      select: { id: true, fcmToken: true, deviceType: true },
+    });
   }
 }

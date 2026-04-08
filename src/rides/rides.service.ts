@@ -12,6 +12,7 @@ import { RidesGateway } from './rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
+import { FcmService } from '../notifications/fcm.service';
 
 @Injectable()
 export class RidesService {
@@ -20,6 +21,7 @@ export class RidesService {
     private gateway: RidesGateway,
     private adminRealtimeGateway: AdminRealtimeGateway,
     @InjectQueue('rides-queue') private rideQueue: Queue,
+    private fcmService: FcmService,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -371,6 +373,13 @@ export class RidesService {
       ...trip,
       estimatedArrivalMins: null,
     });
+
+    // Send Push Notification to driver
+    this.fcmService.sendToUser(dto.driverId!, {
+      title: 'New Ride Request!',
+      body: `You have a new ride request from ${trip.owner.name}.`,
+      data: { tripId: trip.id, type: 'new_ride_request' },
+    }).catch(err => console.error('FCM Error in immediate ride:', err));
 
     const response = {
       ...trip,

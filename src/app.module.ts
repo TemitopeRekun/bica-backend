@@ -12,6 +12,7 @@ import { RedisModule } from './redis/redis.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bullmq';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -50,7 +51,9 @@ import { BullModule } from '@nestjs/bullmq';
         };
       },
     }),
+    NotificationsModule,
   ],
 })
+
 
 export class AppModule {}

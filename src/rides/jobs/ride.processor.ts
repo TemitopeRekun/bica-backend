@@ -4,6 +4,7 @@ import { Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RidesGateway } from '../rides.gateway';
 import { TripStatus } from '@prisma/client';
+import { FcmService } from '../../notifications/fcm.service';
 
 export interface RideSearchJobData {
   tripId: string;
@@ -21,6 +22,7 @@ export class RideProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly ridesGateway: RidesGateway,
     @InjectQueue('rides-queue') private readonly rideQueue: Queue,
+    private readonly fcmService: FcmService,
   ) {
     super();
   }
@@ -145,8 +147,18 @@ export class RideProcessor extends WorkerHost {
 
           this.logger.log(`Trip ${trip.id} assigned to driver ${candidate.id}`);
 
-          // Also trigger Push Notification to owner & driver here...
-          // (To be implemented in NotificationsModule)
+          // Send Push Notifications
+          await this.fcmService.sendToUser(trip.ownerId, {
+            title: 'Driver Assigned!',
+            body: `Your driver ${candidate.name} is on the way for your scheduled ride.`,
+            data: { tripId: trip.id, type: 'ride_assigned' },
+          });
+
+          await this.fcmService.sendToUser(candidate.id, {
+            title: 'New Trip Scheduled!',
+            body: `You have a scheduled ride starting soon. Please check your app.`,
+            data: { tripId: trip.id, type: 'new_scheduled_trip' },
+          });
 
           return { assignedTo: candidate.id };
         }
@@ -194,6 +206,13 @@ export class RideProcessor extends WorkerHost {
       tripId: trip.id,
       status: TripStatus.DECLINED,
       message: 'No available drivers found nearby for your scheduled ride. Please try again later.',
+    });
+
+    // Send failure Push Notification
+    await this.fcmService.sendToUser(trip.ownerId, {
+      title: 'Scheduled Ride Canceled',
+      body: "Unfortunately, we couldn't find a driver for your scheduled ride. Please try booking again.",
+      data: { tripId: trip.id, type: 'dispatch_failed' },
     });
 
     return { failed: true, reason: 'Exhausted radii' };

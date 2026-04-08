@@ -15,6 +15,7 @@ import { UserRole } from '@prisma/client';
 import { UsersService } from './users.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
+import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
@@ -121,5 +122,14 @@ export class UsersController {
     @Body('isOnline') isOnline: boolean,
   ) {
     return this.usersService.updateOnlineStatus(user.sub, isOnline);
+  }
+
+  // PATCH /users/fcm-token
+  @Patch('fcm-token')
+  updateFcmToken(
+    @CurrentUser() user: any,
+    @Body() dto: UpdateFcmTokenDto,
+  ) {
+    return this.usersService.updateFcmToken(user.sub, dto);
   }
 }
