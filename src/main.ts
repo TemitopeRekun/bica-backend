@@ -6,6 +6,7 @@ import {
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
+import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -13,6 +14,8 @@ async function bootstrap() {
     AppModule,
     new FastifyAdapter({ logger: false, bodyLimit: 10 * 1024 * 1024 }),
   );
+
+  await app.register(helmet);
 
   await app.register(multipart, {
     limits: {
@@ -33,7 +36,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins.includes('*') ? true : corsOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Idempotency-Key'],
   });
 
   app.useGlobalPipes(

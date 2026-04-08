@@ -89,6 +89,9 @@ model User {
   monnifySubAccountCode String?
   payouts          Payout[]
   disbursements   Disbursement[]
+  auditLogs       AuditLog[]
+
+  @@index([role, isOnline, approvalStatus])
 }
 
 model Trip {
@@ -108,10 +111,10 @@ model Trip {
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   completedAt      DateTime?
-  startedAt        DateTime?        // when driver clicks Start Trip
-  estimatedMins    Float?           // from Google Distance Matrix at booking
+  startedAt        DateTime?
+  estimatedMins    Float?
   finalFare        Float? 
-  fareBreakdown    Json?    // stores distanceComponent, timeComponent, extraMins etc
+  fareBreakdown    Json?
   paymentStatus   PaymentStatus  @default(UNPAID)
   monnifyTxRef    String?        @unique
   paidAt          DateTime?
@@ -121,6 +124,11 @@ model Trip {
   driverId         String?
   payout           Payout?
   paymentRecord   PaymentRecord?
+  tripAuditLogs   TripAuditLog[]
+
+  @@index([status, createdAt])
+  @@index([ownerId])
+  @@index([driverId])
 }
 
 model Payout {
@@ -177,4 +185,34 @@ model Disbursement {
   requestedAt   DateTime           @default(now())
   completedAt   DateTime?
   webhookPayload Json?
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String
+  entity      String
+  entityId    String?
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity, entityId])
+}
+
+model TripAuditLog {
+  id        String   @id @default(uuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id])
+  status    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([tripId])
 }

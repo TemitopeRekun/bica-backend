@@ -6,6 +6,7 @@ import {
   Param,
   Body,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { RidesService } from "./rides.service";
 import { CreateRideDto } from './dto/create-ride.dto';
@@ -15,9 +16,11 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { UserRole } from '@prisma/client';
 
 @UseGuards(AuthGuard, RolesGuard)
+@UseInterceptors(IdempotencyInterceptor)
 @Controller('rides')
 export class RidesController {
   constructor(private ridesService: RidesService) { }

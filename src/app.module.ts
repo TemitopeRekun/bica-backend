@@ -6,12 +6,12 @@ import { RidesModule } from './rides/rides.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LocationsModule } from './locations/locations.module';
 import { AdminModule } from './admin/admin.module';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SettingsModule } from './settings/settings.module';
 import { RedisModule } from './redis/redis.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
-
-
+import { ThrottlerModule } from '@nestjs/throttler';
+import { BullModule } from '@nestjs/bullmq';
 
 @Module({
   imports: [
@@ -28,6 +28,29 @@ import { CloudinaryModule } from './cloudinary/cloudinary.module';
     AdminModule,
     SettingsModule,
     RedisModule,
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000,
+        limit: 100,
+      },
+    ]),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => {
+        const url = configService.get<string>('REDIS_URL');
+        let connection: any = { url };
+        
+        if (url?.startsWith('rediss://')) {
+          connection.tls = { rejectUnauthorized: false };
+        }
+        
+        return {
+          connection,
+        };
+      },
+    }),
   ],
 })
+
 export class AppModule {}

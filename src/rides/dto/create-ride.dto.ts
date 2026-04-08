@@ -51,6 +51,6 @@ export class CreateRideDto {
 
   // Driver selected by owner from the list
   @IsString()
-  @IsNotEmpty()
-  driverId: string;
+  @IsOptional()
+  driverId?: string;
 }

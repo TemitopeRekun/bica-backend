@@ -311,12 +311,36 @@ export class PaymentsService {
         driverSplitPercent,
       });
 
-    await this.prisma.trip.update({
-      where: { id: tripId },
-      data: {
-        paymentStatus: 'PENDING',
-        monnifyTxRef: transactionReference,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      // Re-verify status inside transaction
+      const currentTrip = await tx.trip.findUnique({
+        where: { id: tripId },
+        select: { paymentStatus: true },
+      });
+
+      if (currentTrip?.paymentStatus === 'PAID') {
+        throw new BadRequestException('This trip has already been paid for');
+      }
+
+      await tx.trip.update({
+        where: { id: tripId },
+        data: {
+          paymentStatus: 'PENDING',
+          monnifyTxRef: transactionReference,
+        },
+      });
+
+      // Audit log for payment initiation
+      await tx.auditLog.create({
+        data: {
+          userId: requestingUserId,
+          action: 'PAYMENT_INITIATED',
+          entity: 'TRIP',
+          entityId: tripId,
+          newValue: { transactionReference, amount: trip.amount },
+          metadata: { provider: 'monnify' },
+        },
+      });
     });
 
     const response = {
@@ -460,15 +484,32 @@ export class PaymentsService {
 
     const paidAt = new Date();
 
-    await this.prisma.$transaction([
-      this.prisma.trip.update({
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Lock the driver's user record to prevent race conditions during wallet updates
+      await tx.$executeRaw`SELECT * FROM "User" WHERE id = ${trip.driverId} FOR UPDATE`;
+
+      // 2. Re-verify the status inside the transaction
+      const currentTrip = await tx.trip.findUnique({
+        where: { id: trip.id },
+        select: { paymentStatus: true },
+      });
+
+      if (currentTrip?.paymentStatus === 'PAID') {
+        this.logger.warn(`Transaction already processed for trip ${trip.id}`);
+        return;
+      }
+
+      // 3. Update trip record
+      await tx.trip.update({
         where: { id: trip.id },
         data: {
           paymentStatus: 'PAID',
           paidAt,
         },
-      }),
-      this.prisma.paymentRecord.create({
+      });
+
+      // 4. Create payment record
+      await tx.paymentRecord.create({
         data: {
           tripId: trip.id,
           totalAmount: verification.amount,
@@ -479,14 +520,29 @@ export class PaymentsService {
           paidAt,
           webhookPayload: payload,
         },
-      }),
-      this.prisma.user.update({
+      });
+
+      // 5. Update driver wallet balance
+      await tx.user.update({
         where: { id: trip.driverId! },
         data: {
           walletBalance: { increment: trip.driverEarnings },
         },
-      }),
-    ]);
+      });
+
+      // 6. Audit Logging for Automated AML compliance
+      await tx.auditLog.create({
+        data: {
+          userId: trip.driverId,
+          action: 'WALLET_INCREMENT',
+          entity: 'USER',
+          entityId: trip.driverId,
+          oldValue: { txRef }, // For traceability
+          newValue: { amount: trip.driverEarnings, type: 'CR' },
+          metadata: { tripId: trip.id, provider: 'monnify' },
+        },
+      });
+    });
 
     this.logger.log(
       `Payment processed for trip ${trip.id} - NGN ${verification.amount}`,

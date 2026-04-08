@@ -197,4 +197,6 @@ export class RidesGateway
       });
     }
   }
+
+  notifyOwnerTripStatus(ownerId: string, data: any) { const socketId = this.ownerSockets.get(ownerId); if (socketId) { this.server.to(socketId).emit('trip:status', data); } }
 }

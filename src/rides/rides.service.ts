@@ -10,6 +10,8 @@ import { UpdateStatusDto } from './dto/update-status.dto';
 import { PaymentStatus, TripStatus, UserRole } from '@prisma/client';
 import { RidesGateway } from './rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
+import { Queue } from 'bullmq';
+import { InjectQueue } from '@nestjs/bullmq';
 
 @Injectable()
 export class RidesService {
@@ -17,6 +19,7 @@ export class RidesService {
     private prisma: PrismaService,
     private gateway: RidesGateway,
     private adminRealtimeGateway: AdminRealtimeGateway,
+    @InjectQueue('rides-queue') private rideQueue: Queue,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -250,32 +253,40 @@ export class RidesService {
       throw new BadRequestException('System settings not configured');
     }
 
-    // Verify chosen driver is still available
-    const driver = await this.prisma.user.findUnique({
-      where: { id: dto.driverId },
-      include: {
-        tripsAsDriver: {
-          where: {
-            status: {
-              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
+    const isScheduled = !!dto.scheduledAt;
+
+    if (!isScheduled) {
+      if (!dto.driverId) {
+        throw new BadRequestException('driverId is required for an immediate ride');
+      }
+
+      // Verify chosen driver is still available
+      const driver = await this.prisma.user.findUnique({
+        where: { id: dto.driverId },
+        include: {
+          tripsAsDriver: {
+            where: {
+              status: {
+                in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
+              },
             },
           },
         },
-      },
-    });
+      });
 
-    if (!driver) {
-      throw new NotFoundException('Driver not found');
-    }
+      if (!driver) {
+        throw new NotFoundException('Driver not found');
+      }
 
-    if (!driver.isOnline) {
-      throw new BadRequestException('This driver is no longer online');
-    }
+      if (!driver.isOnline) {
+        throw new BadRequestException('This driver is no longer online');
+      }
 
-    if (driver.tripsAsDriver.length > 0) {
-      throw new BadRequestException(
-        'This driver has just been assigned another trip. Please select a different driver.',
-      );
+      if (driver.tripsAsDriver.length > 0) {
+        throw new BadRequestException(
+          'This driver has just been assigned another trip. Please select a different driver.',
+        );
+      }
     }
 
     const estimatedMins = dto.estimatedMins ?? 0;
@@ -289,11 +300,15 @@ export class RidesService {
       settings.commission,
     );
 
+    const tripStatus = isScheduled 
+      ? TripStatus.SCHEDULED 
+      : TripStatus.PENDING_ACCEPTANCE;
+
     const trip = await this.prisma.trip.create({
       data: {
         ownerId,
-        driverId: dto.driverId,
-        status: TripStatus.PENDING_ACCEPTANCE, // ← waiting for driver to accept
+        driverId: isScheduled ? null : dto.driverId,
+        status: tripStatus,
         pickupAddress: dto.pickupAddress,
         pickupLat: dto.pickupLat,
         pickupLng: dto.pickupLng,
@@ -305,7 +320,7 @@ export class RidesService {
         amount,
         commissionAmount,
         driverEarnings,
-        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
+        scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
       },
       include: {
         owner: {
@@ -324,8 +339,35 @@ export class RidesService {
       },
     });
 
-    // Notify driver via WebSocket about the new ride request
-    this.gateway.notifyDriverNewRide(dto.driverId, {
+    if (isScheduled) {
+      // Schedule Job 15 mins before scheduled time
+      const schedDate = new Date(dto.scheduledAt!);
+      const delayMs = schedDate.getTime() - Date.now() - (15 * 60 * 1000);
+      const finalDelay = Math.max(delayMs, 0);
+
+      await this.rideQueue.add(
+        'ride-search',
+        {
+          tripId: trip.id,
+          pickupLat: dto.pickupLat,
+          pickupLng: dto.pickupLng,
+          radiusKm: 5,
+          transmission: dto.transmission,
+        },
+        { delay: finalDelay },
+      );
+
+      const response = {
+        ...trip,
+        estimatedArrivalMins: null,
+      };
+
+      this.adminRealtimeGateway.notifyTripUpdated('created', response);
+      return response;
+    }
+
+    // Immediate Ride - Notify driver via WebSocket
+    this.gateway.notifyDriverNewRide(dto.driverId!, {
       ...trip,
       estimatedArrivalMins: null,
     });
