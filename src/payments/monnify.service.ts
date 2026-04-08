@@ -214,7 +214,7 @@ export class MonnifyService {
       amount: params.amount,
       customerName: params.ownerName,
       customerEmail: params.ownerEmail,
-      paymentReference: `BICA-${params.tripId}-${Date.now()}`,
+      paymentReference: `BICA-${params.tripId}`,
       paymentDescription: `BICA ride payment - Trip ${params.tripId}`,
       currencyCode: 'NGN',
       contractCode,
