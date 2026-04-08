@@ -5,6 +5,7 @@ import {
   Headers,
   Param,
   Post,
+  Query,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
 
@@ -84,15 +86,18 @@ export class PaymentsController {
 
   @UseGuards(AuthGuard)
   @Get('history')
-  getHistory(@CurrentUser() user: any) {
-    return this.paymentsService.getPaymentHistory(user.sub, user.role);
+  getHistory(
+    @CurrentUser() user: any,
+    @Query() pagination: PaginationDto,
+  ) {
+    return this.paymentsService.getPaymentHistory(user.sub, user.role, pagination);
   }
 
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Get('pending')
-  getPending() {
-    return this.paymentsService.getPendingPayments();
+  getPending(@Query() pagination: PaginationDto) {
+    return this.paymentsService.getPendingPayments(pagination);
   }
 
   @UseGuards(AuthGuard, RolesGuard)

@@ -5,19 +5,21 @@ import {
   Patch,
   Param,
   Body,
+  Query,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { RidesService } from "./rides.service";
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
-import { UserRole } from '@prisma/client';
+import { TripStatus, UserRole } from '@prisma/client';
 
 @UseGuards(AuthGuard, RolesGuard)
 @UseInterceptors(IdempotencyInterceptor)
@@ -39,8 +41,11 @@ export class RidesController {
   // Any authenticated user gets their trip history
   // GET /rides/history
   @Get('history')
-  getHistory(@CurrentUser() user: any) {
-    return this.ridesService.getHistory(user.sub, user.role);
+  getHistory(
+    @CurrentUser() user: any,
+    @Query() pagination: PaginationDto,
+  ) {
+    return this.ridesService.getHistory(user.sub, user.role, pagination);
   }
 
   // Owner or driver gets their current ride context

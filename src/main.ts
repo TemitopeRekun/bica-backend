@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(

@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { RidesGateway } from '../rides/rides.gateway';
 import { MonnifyApiException, MonnifyService } from './monnify.service';
+import { PaginationDto } from '../common/dto/pagination.dto';
 
 type DriverPayoutProfile = {
   id: string;
@@ -295,11 +296,8 @@ export class PaymentsService {
       );
     }
 
-    const settings = await this.prisma.systemSettings.findUnique({
-      where: { id: 1 },
-    });
-
-    const driverSplitPercent = 100 - (settings?.commission ?? 25);
+    // Use snapshotted commission from the trip record
+    const driverSplitPercent = 100 - trip.commissionPercent;
 
     const { checkoutUrl, transactionReference } =
       await this.monnify.initiateTransaction({
@@ -656,7 +654,7 @@ export class PaymentsService {
     };
   }
 
-  async getPaymentHistory(userId: string, role: string) {
+  async getPaymentHistory(userId: string, role: string, pagination: PaginationDto) {
     const where =
       role === 'ADMIN'
         ? {}
@@ -664,32 +662,63 @@ export class PaymentsService {
           ? { trip: { driverId: userId } }
           : { trip: { ownerId: userId } };
 
-    return this.prisma.paymentRecord.findMany({
-      where,
-      include: {
-        trip: {
-          select: {
-            id: true,
-            pickupAddress: true,
-            destAddress: true,
-            status: true,
-            owner: { select: { name: true } },
-            driver: { select: { name: true } },
+    const [total, items] = await Promise.all([
+      this.prisma.paymentRecord.count({ where }),
+      this.prisma.paymentRecord.findMany({
+        where,
+        include: {
+          trip: {
+            select: {
+              id: true,
+              pickupAddress: true,
+              destAddress: true,
+              status: true,
+              owner: { select: { name: true } },
+              driver: { select: { name: true } },
+            },
           },
         },
+        orderBy: { paidAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+    ]);
+
+    return {
+      items,
+      meta: {
+        total,
+        page: pagination.page,
+        limit: pagination.limit,
+        totalPages: Math.ceil(total / pagination.limit!),
       },
-      orderBy: { paidAt: 'desc' },
-    });
+    };
   }
 
-  async getPendingPayments() {
-    return this.prisma.trip.findMany({
-      where: { paymentStatus: 'PENDING' },
-      include: {
-        owner: { select: { name: true, email: true, phone: true } },
-        driver: { select: { name: true } },
+  async getPendingPayments(pagination: PaginationDto) {
+    const where = { paymentStatus: 'PENDING' as const };
+    const [total, items] = await Promise.all([
+      this.prisma.trip.count({ where }),
+      this.prisma.trip.findMany({
+        where,
+        include: {
+          owner: { select: { name: true, email: true, phone: true } },
+          driver: { select: { name: true } },
+        },
+        orderBy: { completedAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+    ]);
+
+    return {
+      items,
+      meta: {
+        total,
+        page: pagination.page,
+        limit: pagination.limit,
+        totalPages: Math.ceil(total / pagination.limit!),
       },
-      orderBy: { completedAt: 'desc' },
-    });
+    };
   }
 }

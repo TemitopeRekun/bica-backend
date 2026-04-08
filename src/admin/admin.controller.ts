@@ -1,9 +1,10 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, UseGuards, Query } from '@nestjs/common';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { AdminService } from './admin.service';
+import { PaginationDto } from '../common/dto/pagination.dto';
 
 @UseGuards(AuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
@@ -17,18 +18,17 @@ export class AdminController {
   }
 
   @Get('users')
-  getUsers() {
-    return this.adminService.getUsers();
+  getUsers(@Query() pagination: PaginationDto) {
+    return this.adminService.getUsers(pagination);
   }
 
   @Get('trips')
-  getTrips() {
-    return this.adminService.getTrips();
+  getTrips(@Query() pagination: PaginationDto) {
+    return this.adminService.getTrips(pagination);
   }
 
   @Get('payouts')
-  getPayouts() {
-    return this.adminService.getPayouts();
+  getPayouts(@Query() pagination: PaginationDto) {
+    return this.adminService.getPayouts(pagination);
   }
-
 }

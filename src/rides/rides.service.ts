@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { PaymentStatus, TripStatus, UserRole } from '@prisma/client';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { RidesGateway } from './rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { Queue } from 'bullmq';
@@ -322,6 +323,7 @@ export class RidesService {
         amount,
         commissionAmount,
         driverEarnings,
+        commissionPercent: settings.commission,
         scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
       },
       include: {
@@ -523,7 +525,7 @@ export class RidesService {
 
       const { commissionAmount, driverEarnings } = this.calculateSplit(
         finalFare,
-        settings!.commission,
+        trip.commissionPercent,
       );
 
       // Update fare fields with final calculated values
@@ -665,7 +667,7 @@ export class RidesService {
 
   // ─── TRIP HISTORY ────────────────────────────────────────────────
 
-  async getHistory(userId: string, userRole: UserRole) {
+  async getHistory(userId: string, userRole: UserRole, pagination: PaginationDto) {
     const where =
       userRole === UserRole.ADMIN
         ? {}
@@ -673,18 +675,33 @@ export class RidesService {
           ? { driverId: userId }
           : { ownerId: userId };
 
-    return this.prisma.trip.findMany({
-      where,
-      include: {
-        owner: {
-          select: { id: true, name: true, avatarUrl: true },
+    const [total, items] = await Promise.all([
+      this.prisma.trip.count({ where }),
+      this.prisma.trip.findMany({
+        where,
+        include: {
+          owner: {
+            select: { id: true, name: true, avatarUrl: true },
+          },
+          driver: {
+            select: { id: true, name: true, avatarUrl: true },
+          },
         },
-        driver: {
-          select: { id: true, name: true, avatarUrl: true },
-        },
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+    ]);
+
+    return {
+      items,
+      meta: {
+        total,
+        page: pagination.page,
+        limit: pagination.limit,
+        totalPages: Math.ceil(total / pagination.limit!),
       },
-      orderBy: { createdAt: 'desc' },
-    });
+    };
   }
 
   // ─── CANCEL RIDE ─────────────────────────────────────────────────

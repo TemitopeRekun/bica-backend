@@ -21,29 +21,12 @@ export class RidesGateway
   @WebSocketServer()
   server: Server;
 
-  private driverSockets = new Map<string, string>();
-  private ownerSockets = new Map<string, string>(); // ← new
-
   handleConnection(client: Socket) {
     console.log(`Client connected: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    for (const [driverId, socketId] of this.driverSockets.entries()) {
-      if (socketId === client.id) {
-        this.driverSockets.delete(driverId);
-        console.log(`Driver ${driverId} disconnected socket ${client.id}`);
-        break;
-      }
-    }
-    // Clean up owner sockets too
-    for (const [ownerId, socketId] of this.ownerSockets.entries()) {
-      if (socketId === client.id) {
-        this.ownerSockets.delete(ownerId);
-        console.log(`Owner ${ownerId} disconnected socket ${client.id}`);
-        break;
-      }
-    }
+    console.log(`Client disconnected: ${client.id}`);
   }
 
   @SubscribeMessage('driver:register')
@@ -51,18 +34,18 @@ export class RidesGateway
     @MessageBody() data: { driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.driverSockets.set(data.driverId, client.id);
-    console.log(`Driver ${data.driverId} registered socket ${client.id}`);
+    client.join(`user:${data.driverId}`);
+    client.join('drivers'); // Also join a general drivers room for broadcasts
+    console.log(`Driver ${data.driverId} joined room user:${data.driverId}`);
   }
 
-  // Owner registers their socket
   @SubscribeMessage('owner:register')
   handleOwnerRegister(
     @MessageBody() data: { ownerId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.ownerSockets.set(data.ownerId, client.id);
-    console.log(`Owner ${data.ownerId} registered socket ${client.id}`);
+    client.join(`user:${data.ownerId}`);
+    console.log(`Owner ${data.ownerId} joined room user:${data.ownerId}`);
   }
 
   @SubscribeMessage('driverlocation')
@@ -73,7 +56,8 @@ export class RidesGateway
       return;
     }
 
-    this.server.to(`driver:${data.driverId}`).emit('locationupdated', {
+    // Emit to anyone tracking this driver
+    this.server.to(`tracking:driver:${data.driverId}`).emit('locationupdated', {
       driverId: data.driverId,
       lat: data.lat,
       lng: data.lng,
@@ -86,15 +70,22 @@ export class RidesGateway
     @MessageBody() data: { driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    client.join(`driver:${data.driverId}`);
+    client.join(`tracking:driver:${data.driverId}`);
+    console.log(`Socket ${client.id} tracking driver ${data.driverId}`);
+  }
+
+  @SubscribeMessage('untrackdriver')
+  handleUntrackDriver(
+    @MessageBody() data: { driverId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    client.leave(`tracking:driver:${data.driverId}`);
+    console.log(`Socket ${client.id} stopped tracking driver ${data.driverId}`);
   }
 
   // Notify driver of new ride request
   notifyDriverNewRide(driverId: string, trip: any) {
-    const socketId = this.driverSockets.get(driverId);
-    if (socketId) {
-      this.server.to(socketId).emit('ride:assigned', trip);
-    }
+    this.server.to(`user:${driverId}`).emit('ride:assigned', trip);
   }
 
   notifyDriverAvailabilityChanged(
@@ -102,20 +93,18 @@ export class RidesGateway
     isOnline: boolean,
     payload?: Record<string, unknown>,
   ) {
-    const socketId = this.driverSockets.get(driverId);
     const event = isOnline ? 'driver:online' : 'driver:offline';
-
     console.log(`Driver ${driverId} marked ${isOnline ? 'online' : 'offline'}`);
 
-    if (socketId) {
-      this.server.to(socketId).emit(event, {
-        driverId,
-        isOnline,
-        timestamp: new Date().toISOString(),
-        ...payload,
-      });
-    }
+    // Notify the specific driver
+    this.server.to(`user:${driverId}`).emit(event, {
+      driverId,
+      isOnline,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    });
 
+    // Broadcast to all observers (e.g., admin dashboard or owners seeing online drivers)
     this.server.emit('driver:availability', {
       driverId,
       isOnline,
@@ -126,33 +115,21 @@ export class RidesGateway
 
   // Notify owner that driver accepted
   notifyOwnerDriverAccepted(ownerId: string, data: any) {
-    const socketId = this.ownerSockets.get(ownerId);
-    if (socketId) {
-      this.server.to(socketId).emit('ride:accepted', data);
-    }
+    this.server.to(`user:${ownerId}`).emit('ride:accepted', data);
   }
 
   // Notify owner that driver declined
   notifyOwnerDriverDeclined(ownerId: string, data: any) {
-    const socketId = this.ownerSockets.get(ownerId);
-    if (socketId) {
-      this.server.to(socketId).emit('ride:declined', data);
-    }
+    this.server.to(`user:${ownerId}`).emit('ride:declined', data);
   }
 
   // Notify owner that trip is complete and payment is needed
   notifyOwnerTripCompleted(ownerId: string, data: any) {
-    const socketId = this.ownerSockets.get(ownerId);
-    if (socketId) {
-      this.server.to(socketId).emit('trip:completed', data);
-    }
+    this.server.to(`user:${ownerId}`).emit('trip:completed', data);
   }
 
   notifyOwnerPaymentUpdated(ownerId: string, data: any) {
-    const socketId = this.ownerSockets.get(ownerId);
-    if (socketId) {
-      this.server.to(socketId).emit('payment:updated', data);
-    }
+    this.server.to(`user:${ownerId}`).emit('payment:updated', data);
   }
 
   // Notify owner of ride progress (milestones)
@@ -162,34 +139,22 @@ export class RidesGateway
     timestamp: string;
     status?: string;
   }) {
-    const socketId = this.ownerSockets.get(ownerId);
-    if (socketId) {
-      this.server.to(socketId).emit('ride:progress', data);
-    }
+    this.server.to(`user:${ownerId}`).emit('ride:progress', data);
   }
 
   @SubscribeMessage('driver:arrived')
   async handleDriverArrived(
-    @MessageBody() data: { tripId: string },
+    @MessageBody() data: { tripId: string; driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    // Determine which driver is sending this
-    let driverId: string | undefined;
-    for (const [id, socketId] of this.driverSockets.entries()) {
-      if (socketId === client.id) {
-        driverId = id;
-        break;
-      }
-    }
-
-    if (!driverId) return;
-
+    // Note: Added driverId to payload for simplicity in Room logic, 
+    // but usually you want to verify this via socket metadata or JWT.
     const trip = await this.prisma.trip.findUnique({
       where: { id: data.tripId },
       select: { ownerId: true, driverId: true },
     });
 
-    if (trip && trip.driverId === driverId) {
+    if (trip && trip.driverId === data.driverId) {
       this.notifyOwnerRideProgress(trip.ownerId, {
         tripId: data.tripId,
         milestone: 'arrived',
@@ -198,5 +163,7 @@ export class RidesGateway
     }
   }
 
-  notifyOwnerTripStatus(ownerId: string, data: any) { const socketId = this.ownerSockets.get(ownerId); if (socketId) { this.server.to(socketId).emit('trip:status', data); } }
+  notifyOwnerTripStatus(ownerId: string, data: any) {
+    this.server.to(`user:${ownerId}`).emit('trip:status', data);
+  }
 }

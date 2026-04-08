@@ -109,6 +109,7 @@ model Trip {
   distanceKm       Float
   commissionAmount Float       @default(0)
   driverEarnings   Float       @default(0)
+  commissionPercent Float      @default(25)
   scheduledAt      DateTime?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Trip" ADD COLUMN     "commissionPercent" DOUBLE PRECISION NOT NULL DEFAULT 25;
