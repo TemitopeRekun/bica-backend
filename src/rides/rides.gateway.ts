@@ -158,7 +158,7 @@ export class RidesGateway
   // Notify owner of ride progress (milestones)
   notifyOwnerRideProgress(ownerId: string, data: {
     tripId: string;
-    milestone: 'assigned' | 'arrived' | 'in_progress' | 'completed';
+    milestone: 'assigned' | 'arrived' | 'inprogress' | 'completed';
     timestamp: string;
     status?: string;
   }) {

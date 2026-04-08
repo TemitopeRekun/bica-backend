@@ -539,10 +539,17 @@ export class RidesService {
     this.adminRealtimeGateway.notifyTripUpdated('status_changed', updated);
 
     // Ride progress sync for owners
-    if (updated.status === TripStatus.IN_PROGRESS) {
+    if (updated.status === TripStatus.ARRIVED) {
       this.gateway.notifyOwnerRideProgress(updated.ownerId, {
         tripId: updated.id,
-        milestone: 'in_progress',
+        milestone: 'arrived',
+        timestamp: new Date().toISOString(),
+        status: updated.status,
+      });
+    } else if (updated.status === TripStatus.IN_PROGRESS) {
+      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
+        tripId: updated.id,
+        milestone: 'inprogress',
         timestamp: new Date().toISOString(),
         status: updated.status,
       });
@@ -576,7 +583,8 @@ export class RidesService {
         TripStatus.DECLINED,
         TripStatus.CANCELLED,
       ],
-      [TripStatus.ASSIGNED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
+      [TripStatus.ASSIGNED]: [TripStatus.ARRIVED, TripStatus.CANCELLED],
+      [TripStatus.ARRIVED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
       [TripStatus.IN_PROGRESS]: [TripStatus.COMPLETED],
       [TripStatus.SEARCHING]: [TripStatus.CANCELLED],
     };
@@ -591,7 +599,7 @@ export class RidesService {
 
     if (
       (
-        [TripStatus.IN_PROGRESS, TripStatus.COMPLETED] as TripStatus[]
+        [TripStatus.ARRIVED, TripStatus.IN_PROGRESS, TripStatus.COMPLETED] as TripStatus[]
       ).includes(newStatus) &&
       !isDriver &&
       !isAdmin
