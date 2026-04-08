@@ -25,11 +25,32 @@ export class FcmService implements OnModuleInit {
     }
 
     try {
+      // Master PEM formatting: Ensure 64-character line wrapping
+      let rawKey = privateKey.trim().replace(/^"|"$/g, '');
+      
+      const header = '-----BEGIN PRIVATE KEY-----';
+      const footer = '-----END PRIVATE KEY-----';
+      
+      // 1. Get just the base64 content
+      let content = rawKey
+        .replace(header, '')
+        .replace(footer, '')
+        .replace(/\s/g, ''); 
+
+      // 2. Wrap content at 64 characters (PEM standard)
+      const wrappedContent = content.match(/.{1,64}/g)?.join('\n') || '';
+
+      // 3. Final re-assembly
+      const formattedKey = `${header}\n${wrappedContent}\n${footer}\n`;
+
+      this.logger.debug(`Formatted key check (header): ${formattedKey.startsWith(header)}`);
+      this.logger.debug(`Formatted key check (footer): ${formattedKey.trim().endsWith(footer)}`);
+
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId,
           clientEmail,
-          privateKey: privateKey.replace(/\\n/g, '\n'),
+          privateKey: formattedKey,
         }),
       });
       this.logger.log('Firebase Admin SDK initialized successfully');

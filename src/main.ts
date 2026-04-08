@@ -1,3 +1,34 @@
+import * as Sentry from '@sentry/nestjs';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
+import * as dotenv from 'dotenv';
+
+// 1. Load env before EVERYTHING
+dotenv.config();
+
+// 2. Initialize Sentry before NestJS factory
+const SENTRY_DSN = process.env.SENTRY_DSN;
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    integrations: [
+      nodeProfilingIntegration(),
+    ],
+    tracesSampleRate: 1.0,
+    profilesSampleRate: 1.0,
+    beforeSend(event) {
+      if (event.request?.data) {
+        const data = event.request.data as any;
+        const sensitiveFields = ['password', 'token', 'bica_token', 'apiKey', 'secret'];
+        sensitiveFields.forEach(field => {
+          if (data[field]) data[field] = '[REDACTED]';
+        });
+      }
+      return event;
+    },
+  });
+}
+
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -8,10 +39,7 @@ import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
-
 import { Logger } from 'nestjs-pino';
-import * as Sentry from '@sentry/nestjs';
-import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 async function bootstrap() {
   const adapter = new FastifyAdapter({ logger: false, bodyLimit: 10 * 1024 * 1024 });
@@ -21,33 +49,6 @@ async function bootstrap() {
     adapter,
     { bufferLogs: true },
   );
-
-  const configService = app.get(ConfigService);
-  const sentryDsn = configService.get<string>('SENTRY_DSN');
-
-  if (sentryDsn) {
-    Sentry.init({
-      dsn: sentryDsn,
-      environment: configService.get<string>('NODE_ENV') || 'development',
-      integrations: [
-        nodeProfilingIntegration(),
-      ],
-      // Performance Monitoring
-      tracesSampleRate: 1.0, 
-      profilesSampleRate: 1.0,
-      // Security: Sanitize sensitive data before sending to Sentry
-      beforeSend(event) {
-        if (event.request?.data) {
-          const data = event.request.data as any;
-          const sensitiveFields = ['password', 'token', 'bica_token', 'apiKey', 'secret'];
-          sensitiveFields.forEach(field => {
-            if (data[field]) data[field] = '[REDACTED]';
-          });
-        }
-        return event;
-      },
-    });
-  }
 
   app.useLogger(app.get(Logger));
 
@@ -99,4 +100,14 @@ async function bootstrap() {
 
   await app.listen(3001, '0.0.0.0');
 }
-bootstrap();
+
+// 3. Catch boot-phase errors in Sentry
+bootstrap().catch((err) => {
+  console.error('Fatal error during bootstrap:', err);
+  if (SENTRY_DSN) {
+    Sentry.captureException(err);
+    Sentry.close(2000).then(() => process.exit(1));
+  } else {
+    process.exit(1);
+  }
+});
