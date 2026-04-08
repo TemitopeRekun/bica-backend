@@ -48,17 +48,17 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
       {
         name: 'short',
         ttl: 1000,
-        limit: 3,
+        limit: 10, // Increased from 3
       },
       {
         name: 'medium',
         ttl: 10000,
-        limit: 20,
+        limit: 50, // Increased from 20
       },
       {
         name: 'long',
         ttl: 60000,
-        limit: 100,
+        limit: 200, // Increased from 100
       },
     ]),
     BullModule.forRootAsync({
@@ -73,7 +73,12 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
         }
         
         return {
-          connection,
+          connection: {
+            ...connection,
+            maxRetriesPerRequest: null, // Critical for BullMQ + Cloud Redis
+            connectTimeout: 30000,
+            keepAlive: 30000,
+          },
         };
       },
     }),

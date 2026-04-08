@@ -34,11 +34,26 @@ export class RidesService {
     estimatedMins: number,
     settings: { baseFare: number; pricePerKm: number; timeRate: number },
   ): number {
-    const price =
-      settings.baseFare +
-      distanceKm * settings.pricePerKm +
-      estimatedMins * settings.timeRate;
-    return Math.round(price / 50) * 50;
+    let price: number;
+
+    if (distanceKm <= 4.5) {
+      // 4.5km Rule: Base 2000
+      price = 2000;
+      if (estimatedMins > 20) {
+        // Overtime: only charge for mins BEYOND 20
+        price += (estimatedMins - 20) * settings.timeRate;
+      }
+    } else {
+      // Standard Rule for longer trips
+      price =
+        settings.baseFare +
+        distanceKm * settings.pricePerKm +
+        estimatedMins * settings.timeRate;
+    }
+
+    // Absolute Minimum Guarantee
+    const finalPrice = Math.max(price, 2000);
+    return Math.round(finalPrice / 50) * 50;
   }
 
   async acceptRide(tripId: string, driverId: string) {
@@ -141,16 +156,35 @@ export class RidesService {
     timeComponent: number;
     totalMins: number;
   } {
-    const baseFare = settings.baseFare;
-    const distanceComponent = distanceKm * settings.pricePerKm;
-    const timeComponent = actualMins * settings.timeRate;
+    let finalFare: number;
+    let baseFareValue = settings.baseFare;
+    let distanceComponent = distanceKm * settings.pricePerKm;
+    let timeComponent = actualMins * settings.timeRate;
 
-    const rawFare = baseFare + distanceComponent + timeComponent;
-    const finalFare = Math.round(rawFare / 50) * 50;
+    if (distanceKm <= 4.5) {
+      // Apply 4.5km rule logic
+      baseFareValue = 2000;
+      distanceComponent = 0; // Included in the 2000 base
+      
+      if (actualMins > 20) {
+        timeComponent = (actualMins - 20) * settings.timeRate;
+      } else {
+        timeComponent = 0; // Included in the 2000 base
+      }
+      
+      finalFare = baseFareValue + timeComponent;
+    } else {
+      // Standard calculation
+      finalFare = baseFareValue + distanceComponent + timeComponent;
+    }
+
+    // Absolute Minimum Guarantee
+    finalFare = Math.max(finalFare, 2000);
+    const roundedFare = Math.round(finalFare / 50) * 50;
 
     return {
-      finalFare,
-      baseFare: Math.round(baseFare),
+      finalFare: roundedFare,
+      baseFare: Math.round(baseFareValue),
       distanceComponent: Math.round(distanceComponent),
       timeComponent: Math.round(timeComponent),
       totalMins: actualMins,
@@ -377,9 +411,10 @@ export class RidesService {
     });
 
     // Send Push Notification to driver
+    const ownerName = (trip as any).owner?.name || 'A user';
     this.fcmService.sendToUser(dto.driverId!, {
       title: 'New Ride Request!',
-      body: `You have a new ride request from ${trip.owner.name}.`,
+      body: `You have a new ride request from ${ownerName}.`,
       data: { tripId: trip.id, type: 'new_ride_request' },
     }).catch(err => console.error('FCM Error in immediate ride:', err));
 

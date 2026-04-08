@@ -13,7 +13,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   const url = this.config.get<string>('REDIS_URL');
 
   this.client = new Redis(url!, {
-    maxRetriesPerRequest: 3,
+    maxRetriesPerRequest: 10,
+    connectTimeout: 30000,
+    keepAlive: 30000,
     lazyConnect: true,
     tls: url?.startsWith('rediss://') ? {} : undefined,
   });

@@ -42,7 +42,11 @@ import { AppModule } from './app.module';
 import { Logger } from 'nestjs-pino';
 
 async function bootstrap() {
-  const adapter = new FastifyAdapter({ logger: false, bodyLimit: 10 * 1024 * 1024 });
+  const adapter = new FastifyAdapter({ 
+    logger: false, 
+    bodyLimit: 10 * 1024 * 1024,
+    trustProxy: true // Essential for ngrok/proxy rate limiting
+  });
   
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,

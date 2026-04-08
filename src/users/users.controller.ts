@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { UserRole } from '@prisma/client';
+import { SkipThrottle } from '@nestjs/throttler';
 import { UsersService } from './users.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
@@ -104,6 +105,7 @@ export class UsersController {
   // PATCH /users/location
   @Roles(UserRole.DRIVER)
   @UseGuards(ApprovedDriverGuard)
+  @SkipThrottle()
   @Patch('location')
   updateLocation(
     @CurrentUser() user: any,
@@ -116,6 +118,7 @@ export class UsersController {
   // PATCH /users/online
   @Roles(UserRole.DRIVER)
   @UseGuards(ApprovedDriverGuard)
+  @SkipThrottle()
   @Patch('online')
   updateOnlineStatus(
     @CurrentUser() user: any,
