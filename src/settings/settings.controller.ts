@@ -9,15 +9,15 @@ import { UserRole } from '@prisma/client';
 
 @Controller('settings')
 export class SettingsController {
-  constructor(private settingsService: SettingsService) {}
+  constructor(private readonly settingsService: SettingsService) {}
 
   @Get()
   getSettings() {
     return this.settingsService.getSettings();
   }
 
-  @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard, RolesGuard)
   @Patch()
   updateSettings(
     @Body() dto: UpdateSettingsDto,
