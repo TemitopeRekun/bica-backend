@@ -67,6 +67,7 @@ export class UsersController {
     @Query('pickupLng') pickupLng?: string,
     @Query('transmission') transmission?: string,
   ) {
+    console.log('📡 [HTTP] Request received: GET /users/drivers/available', { pickupLat, pickupLng, transmission });
     const lat = pickupLat ? parseFloat(pickupLat) : undefined;
     const lng = pickupLng ? parseFloat(pickupLng) : undefined;
     return this.usersService.getAvailableDrivers(lat, lng, transmission);

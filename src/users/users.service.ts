@@ -161,13 +161,14 @@ export class UsersService {
       select: {
         id: true,
         name: true,
+        role: true,
         isOnline: true,
         locationLat: true,
         locationLng: true,
       },
     });
 
-    this.logger.log(`Driver ${id} is now ${dto.isOnline ? 'ONLINE' : 'OFFLINE'}${
+    this.logger.log(`Driver ${id} [Role: ${user.role}] is now ${dto.isOnline ? 'ONLINE' : 'OFFLINE'}${
       dto.isOnline ? ` at [${dto.lat}, ${dto.lng}]` : ''
     }`);
 
@@ -263,33 +264,22 @@ export class UsersService {
   ) {
     const drivers = await this.prisma.user.findMany({
       where: {
-        role: UserRole.DRIVER,
-        approvalStatus: 'APPROVED',
-        isBlocked: false,
-        isOnline: true,
-        locationLat: { not: null },
-        locationLng: { not: null },
-        ...(transmission === 'Manual'
-          ? { OR: [{ transmission: 'Manual' }, { transmission: 'Both' }] }
-          : transmission === 'Automatic'
-            ? {
-              OR: [
-                { transmission: 'Automatic' },
-                { transmission: 'Both' },
-                { transmission: null },
-              ],
-            }
-            : {}),
+        isOnline: true, // Wide-Net: see everyone who is online
       },
       select: {
         id: true,
         name: true,
+        email: true,
+        role: true,
+        approvalStatus: true,
+        isBlocked: true,
+        isOnline: true,
+        locationLat: true,
+        locationLng: true,
+        transmission: true,
         rating: true,
         totalTrips: true,
         avatarUrl: true,
-        transmission: true,
-        locationLat: true,
-        locationLng: true,
         tripsAsDriver: {
           where: {
             status: {
@@ -301,8 +291,17 @@ export class UsersService {
       },
     });
 
-    const available = drivers.filter(
-      (d) => d.tripsAsDriver.length === 0,
+    const available = drivers.filter(d => 
+      d.approvalStatus === 'APPROVED' &&
+      !d.isBlocked &&
+      d.locationLat !== null &&
+      d.locationLng !== null &&
+      d.tripsAsDriver.length === 0 &&
+      (transmission === 'Manual'
+        ? (d.transmission === 'MANUAL' || d.transmission === 'BOTH')
+        : transmission === 'Automatic'
+          ? (d.transmission === 'AUTOMATIC' || d.transmission === 'BOTH' || d.transmission === null)
+          : true)
     );
 
     if (pickupLat !== undefined && pickupLng !== undefined) {
