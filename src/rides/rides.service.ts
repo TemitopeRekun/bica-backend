@@ -34,7 +34,7 @@ export class RidesService {
    * 🛡️ SINGLE SOURCE OF TRUTH (SSOT) PRICING ENGINE (BICA VERSION)
    * All fare calculations (estimation and finalization) MUST use this method.
    */
-  private calculateTripFare(
+  public calculateTripFare(
     distanceKm: number,
     durationMins: number,
     settings: { 
@@ -171,7 +171,17 @@ export class RidesService {
         timeRateSnapshot: settings.timeRate,
         minimumFareSnapshot: (settings as any).minimumFare ?? 2000,
         minimumFareDurationSnapshot: (settings as any).minimumFareDuration ?? 20,
-      },
+        fareBreakdown: {
+          totalAmount: amount,
+          baseFare: fareDetails.baseFare,
+          distanceKm: dto.distanceKm,
+          distanceComponent: fareDetails.distanceComponent,
+          timeComponent: fareDetails.timeComponent,
+          totalMins: dto.estimatedMins,
+          isEstimate: true,
+          pricingBranch: fareDetails.pricingBranch
+        },
+      } as any,
       include: {
         owner: { select: { id: true, name: true, phone: true } },
         driver: { select: { id: true, name: true, phone: true, rating: true } },
@@ -386,7 +396,15 @@ export class RidesService {
         minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20
       };
 
-      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } = this.calculateTripFare(trip.distanceKm, actualMins, lookupSettings);
+      const { 
+        finalFare, 
+        baseFare, 
+        distanceComponent, 
+        timeComponent, 
+        totalMins, 
+        pricingBranch 
+      } = this.calculateTripFare(trip.distanceKm, actualMins, lookupSettings);
+      
       const { commissionAmount, driverEarnings } = this.calculateSplit(finalFare, (trip as any).commissionPercent);
       
       updateData.finalFare = finalFare;
@@ -394,12 +412,14 @@ export class RidesService {
       updateData.commissionAmount = commissionAmount;
       updateData.driverEarnings = driverEarnings;
       updateData.fareBreakdown = { 
+        totalAmount: finalFare,
         baseFare, 
         distanceKm: trip.distanceKm, 
         distanceComponent, 
         timeComponent, 
         totalMins,
-        isSnapshotUsed: true 
+        isSnapshotUsed: true,
+        pricingBranch // Correctly extracted here
       };
     }
 

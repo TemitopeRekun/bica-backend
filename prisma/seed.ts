@@ -23,7 +23,11 @@ async function main() {
 
   await prisma.systemSettings.upsert({
     where: { id: 1 },
-    update: {},
+    update: {
+      minimumFare: 2000,
+      minimumFareDistance: 4.5,
+      minimumFareDuration: 20,
+    },
     create: {
       id: 1,
       baseFare: 500,
@@ -31,6 +35,9 @@ async function main() {
       timeRate: 50,
       commission: 25,
       autoApprove: false,
+      minimumFare: 2000,
+      minimumFareDistance: 4.5,
+      minimumFareDuration: 20,
     },
   });
 

@@ -296,6 +296,13 @@ export class PaymentsService {
       );
     }
 
+    // 🕵️ EMERGENCY DIAGNOSTIC
+    console.log(`💳 [PAYMENT_INIT_DIAGNOSTIC] Trip: ${trip.id} | Amount: ${trip.amount} | Status: ${trip.status}`);
+
+    if (!trip.amount || trip.amount <= 0) {
+      throw new BadRequestException('Invalid trip amount (0/null). Please ensure the trip is completed correctly.');
+    }
+
     // Use snapshotted commission from the trip record
     const driverSplitPercent = 100 - trip.commissionPercent;
 

@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { RedisService } from '../redis/redis.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { RidesService } from '../rides/rides.service';
 
 export interface LocationResult {
   id: string;
@@ -73,6 +75,8 @@ export class LocationsService {
   constructor(
     private config: ConfigService,
     private redis: RedisService,
+    private prisma: PrismaService,
+    private ridesService: RidesService,
   ) {}
 
   async search(
@@ -285,7 +289,7 @@ export class LocationsService {
         distanceKm: Math.round(distanceKm * 10) / 10,
         estimatedMins,
         currentTrafficMins,
-        fareEstimate: this.calculateFareRange(
+        fareEstimate: await this.calculateFareRange(
           distanceKm,
           estimatedMins,
           currentTrafficMins,
@@ -633,33 +637,37 @@ export class LocationsService {
     return 'Residential';
   }
 
-  private calculateFareRange(
+  private async calculateFareRange(
     distanceKm: number,
     estimatedMins: number,
     currentTrafficMins: number,
-  ): { low: number; high: number } {
-    const BASE_FARE = 500;
-    const RATE_PER_KM = 100;
-    const RATE_PER_MIN = 50;
-    const baseFare = BASE_FARE + distanceKm * RATE_PER_KM;
-    const low = Math.round((baseFare + estimatedMins * RATE_PER_MIN) / 50) * 50;
-    const high =
-      Math.round((baseFare + currentTrafficMins * RATE_PER_MIN) / 50) * 50;
+  ): Promise<{ low: number; high: number }> {
+    const settings = await this.prisma.systemSettings.findFirst();
+    if (!settings) {
+      // Emergency fallbacks if DB settings missing
+      return { low: 2000, high: 2000 };
+    }
 
-    return { low, high: Math.max(low, high) };
+    const lowEstimate = this.ridesService.calculateTripFare(distanceKm, estimatedMins, settings as any);
+    const highEstimate = this.ridesService.calculateTripFare(distanceKm, currentTrafficMins, settings as any);
+
+    return { 
+      low: lowEstimate.finalFare, 
+      high: Math.max(lowEstimate.finalFare, highEstimate.finalFare) 
+    };
   }
 
-  private haversineFallback(
+  private async haversineFallback(
     lat1: number,
     lng1: number,
     lat2: number,
     lng2: number,
-  ): {
+  ): Promise<{
     distanceKm: number;
     estimatedMins: number;
     currentTrafficMins: number;
     fareEstimate: { low: number; high: number };
-  } {
+  }> {
     const distanceKm = this.calculateStraightLineDistanceKm(
       lat1,
       lng1,
@@ -674,7 +682,7 @@ export class LocationsService {
       distanceKm: roundedDistanceKm,
       estimatedMins,
       currentTrafficMins,
-      fareEstimate: this.calculateFareRange(
+      fareEstimate: await this.calculateFareRange(
         roundedDistanceKm,
         estimatedMins,
         currentTrafficMins,
