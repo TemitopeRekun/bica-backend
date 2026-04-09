@@ -30,52 +30,70 @@ export class RidesService {
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
 
-  private calculateEstimatedFare(
+  /**
+   * 🛡️ SINGLE SOURCE OF TRUTH (SSOT) PRICING ENGINE (BICA VERSION)
+   * All fare calculations (estimation and finalization) MUST use this method.
+   */
+  private calculateTripFare(
     distanceKm: number,
-    estimatedMins: number,
-    settings: { baseFare: number; pricePerKm: number; timeRate: number },
-  ): number {
-    let price: number;
-    if (distanceKm <= 4.5) {
-      price = 2000;
-      if (estimatedMins > 20) {
-        price += (estimatedMins - 20) * settings.timeRate;
-      }
-    } else {
-      price =
-        settings.baseFare +
-        distanceKm * settings.pricePerKm +
-        estimatedMins * settings.timeRate;
-    }
-    return Math.round(price / 100) * 100;
-  }
-
-  private calculateFinalFare(
-    distanceKm: number,
-    actualMins: number,
-    settings: { baseFare: number; pricePerKm: number; timeRate: number },
+    durationMins: number,
+    settings: { 
+      baseFare: number; 
+      pricePerKm: number; 
+      timeRate: number;
+      minimumFare?: number;
+      minimumFareDistance?: number;
+      minimumFareDuration?: number;
+    },
   ) {
-    let finalFare: number;
-    if (distanceKm <= 4.5) {
-      finalFare = 2000;
-      if (actualMins > 20) {
-        finalFare += (actualMins - 20) * settings.timeRate;
+    const minFare = settings.minimumFare ?? 2000;
+    const minDist = settings.minimumFareDistance ?? 4.5;
+    const minDuration = settings.minimumFareDuration ?? 20;
+
+    let finalFareRaw = 0;
+    let branch = '';
+
+    // BRANCH 1 & 2: The "Threshold Zone" (Short Distance)
+    if (distanceKm <= minDist) {
+      if (durationMins <= minDuration) {
+        // ZONE A: Short and Fast (Fixed Rate)
+        finalFareRaw = minFare;
+        branch = 'ZONE_A (SHORT_FAST)';
+      } else {
+        // ZONE B: Short and Slow (Base + Traffic Penalty)
+        const extraMins = durationMins - minDuration;
+        finalFareRaw = minFare + (extraMins * settings.timeRate);
+        branch = 'ZONE_B (SHORT_SLOW)';
       }
     } else {
-      finalFare =
+      // BRANCH 3: Standard Long Distance Meter
+      const standardFare =
         settings.baseFare +
         distanceKm * settings.pricePerKm +
-        actualMins * settings.timeRate;
+        durationMins * settings.timeRate;
+      
+      // Global Minimum Enforcement
+      if (standardFare < minFare) {
+        finalFareRaw = minFare;
+        branch = 'ZONE_C (LONG_BELOW_MIN)';
+      } else {
+        finalFareRaw = standardFare;
+        branch = 'ZONE_C (STANDARD)';
+      }
     }
 
-    const roundedFare = Math.round(finalFare / 100) * 100;
+    // Rounding Strategy (SSOT: Nearest 50 Naira)
+    const finalFare = Math.round(finalFareRaw / 50) * 50;
+
+    this.logger.debug(`💰 [PRICING_BRANCH] ${branch} | Raw: ${finalFareRaw} | Final: ${finalFare}`);
 
     return {
-      finalFare: roundedFare,
+      finalFare,
       baseFare: settings.baseFare,
       distanceComponent: distanceKm * settings.pricePerKm,
-      timeComponent: actualMins * settings.timeRate,
-      totalMins: actualMins,
+      timeComponent: durationMins * settings.timeRate,
+      totalMins: durationMins,
+      pricingBranch: branch
     };
   }
 
@@ -117,12 +135,17 @@ export class RidesService {
     }
 
     const isScheduled = !!dto.scheduledAt;
-    const amount = this.calculateEstimatedFare(dto.distanceKm, dto.estimatedMins ?? 0, settings);
+    const { finalFare: amount, ...fareDetails } = this.calculateTripFare(
+      dto.distanceKm, 
+      dto.estimatedMins ?? 0, 
+      settings as any
+    );
+    
     const { commissionAmount, driverEarnings } = this.calculateSplit(amount, settings.commission);
 
     const tripStatus = isScheduled ? TripStatus.SCHEDULED : TripStatus.PENDING_ACCEPTANCE;
 
-    this.logger.log(`📍 [RIDE REQUEST] Pickup → lat: ${dto.pickupLat} | lng: ${dto.pickupLng}`);
+    this.logger.log(`📍 [RIDE_SSOT] Created: ${amount} (Base: ${fareDetails.baseFare} | Dist: ${dto.distanceKm} | Time: ${dto.estimatedMins})`);
 
     const trip = await this.prisma.trip.create({
       data: {
@@ -142,6 +165,12 @@ export class RidesService {
         driverEarnings,
         commissionPercent: settings.commission as any,
         scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
+        // 🛡️ Lock in the Snapshot (SSOT)
+        baseFareSnapshot: settings.baseFare,
+        pricePerKmSnapshot: settings.pricePerKm,
+        timeRateSnapshot: settings.timeRate,
+        minimumFareSnapshot: (settings as any).minimumFare ?? 2000,
+        minimumFareDurationSnapshot: (settings as any).minimumFareDuration ?? 20,
       },
       include: {
         owner: { select: { id: true, name: true, phone: true } },
@@ -157,13 +186,20 @@ export class RidesService {
       this.gateway.notifyDriverNewRide(dto.driverId!, trip);
       this.fcmService.sendToUser(dto.driverId!, {
         title: 'New Ride Request!',
-        body: `You have a new ride request from ${trip.owner.name}.`,
+        body: `You have a new ride request from ${(trip as any).owner.name}.`,
         data: { tripId: trip.id, type: 'new_ride' },
       }).catch(e => this.logger.error(`FCM Error: ${e.message}`));
     }
 
     this.adminRealtimeGateway.notifyTripUpdated('created', trip);
-    return trip;
+    return {
+      ...trip,
+      _debug: {
+        isBackendDynamicPrice: true,
+        roundedAmount: amount,
+        serverTime: new Date().toISOString()
+      }
+    };
   }
 
   async getHistory(userId: string, role: UserRole, pagination: PaginationDto) {
@@ -183,10 +219,17 @@ export class RidesService {
 
   async getCurrentRide(userId: string, role: UserRole) {
     const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
-    return this.prisma.trip.findFirst({
+    const trip = await this.prisma.trip.findFirst({
       where: {
         ...filter,
-        status: { in: [TripStatus.PENDING_ACCEPTANCE, TripStatus.ASSIGNED, TripStatus.IN_PROGRESS] },
+        status: { 
+          in: [
+            TripStatus.PENDING_ACCEPTANCE, 
+            TripStatus.ASSIGNED, 
+            TripStatus.ARRIVED, // 🛡️ Fix: Don't disappear after arrival
+            TripStatus.IN_PROGRESS
+          ] 
+        },
       },
       include: {
         owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
@@ -194,6 +237,14 @@ export class RidesService {
       },
       orderBy: { updatedAt: 'desc' },
     });
+
+    if (trip) {
+      this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] for ${role} ${userId}`);
+    } else {
+      this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+    }
+
+    return trip;
   }
 
   async findOne(id: string, userId: string) {
@@ -320,17 +371,36 @@ export class RidesService {
     if (dto.status === TripStatus.IN_PROGRESS) updateData.startedAt = new Date();
     if (dto.status === TripStatus.COMPLETED) {
       updateData.completedAt = new Date();
-      const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
+      
       const startedAt = trip.startedAt ?? new Date();
       const actualMins = Math.ceil((updateData.completedAt.getTime() - startedAt.getTime()) / 60000);
-      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } = this.calculateFinalFare(trip.distanceKm, actualMins, settings!);
+      
+      // 🛡️ Snapshot Settlement (SSOT)
+      // We use the rates that were 'locked in' when the ride was created.
+      const lookupSettings = {
+        baseFare: (trip as any).baseFareSnapshot ?? 500,
+        pricePerKm: (trip as any).pricePerKmSnapshot ?? 100,
+        timeRate: (trip as any).timeRateSnapshot ?? 50,
+        minimumFare: (trip as any).minimumFareSnapshot ?? 2000,
+        minimumFareDistance: (trip as any).minimumFareDistance ?? 4.5,
+        minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20
+      };
+
+      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } = this.calculateTripFare(trip.distanceKm, actualMins, lookupSettings);
       const { commissionAmount, driverEarnings } = this.calculateSplit(finalFare, (trip as any).commissionPercent);
       
       updateData.finalFare = finalFare;
       updateData.amount = finalFare;
       updateData.commissionAmount = commissionAmount;
       updateData.driverEarnings = driverEarnings;
-      updateData.fareBreakdown = { baseFare, distanceKm: trip.distanceKm, distanceComponent, timeComponent, totalMins };
+      updateData.fareBreakdown = { 
+        baseFare, 
+        distanceKm: trip.distanceKm, 
+        distanceComponent, 
+        timeComponent, 
+        totalMins,
+        isSnapshotUsed: true 
+      };
     }
 
     const tripUpdate = await this.prisma.trip.update({

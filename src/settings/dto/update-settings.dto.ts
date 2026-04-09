@@ -33,4 +33,19 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsString()
   latestAppVersion?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minimumFare?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minimumFareDistance?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minimumFareDuration?: number;
 }

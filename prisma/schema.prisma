@@ -121,6 +121,14 @@ model Trip {
   paymentStatus   PaymentStatus  @default(UNPAID)
   monnifyTxRef    String?        @unique
   paidAt          DateTime?
+  
+  // 🛡️ Pricing Snapshots (SSOT)
+  baseFareSnapshot     Float?
+  pricePerKmSnapshot   Float?
+  timeRateSnapshot     Float?
+  minimumFareSnapshot  Float?
+  minimumFareDurationSnapshot Float?
+  
   owner            User        @relation("OwnerTrips", fields: [ownerId], references: [id])
   ownerId          String
   driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
@@ -156,6 +164,9 @@ model SystemSettings {
   timeRate    Float    @default(50)
   commission       Float    @default(25)
   autoApprove      Boolean  @default(false)
+  minimumFare      Float    @default(2000)
+  minimumFareDistance Float   @default(4.5)
+  minimumFareDuration Float   @default(20)
   minAppVersion    String   @default("1.0.0")
   latestAppVersion String   @default("1.0.0")
   updatedAt        DateTime @updatedAt
