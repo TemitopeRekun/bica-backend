@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, UseGuards, Query, Post, Param } from '@nestjs/common';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -30,5 +30,10 @@ export class AdminController {
   @Get('payouts')
   getPayouts(@Query() pagination: PaginationDto) {
     return this.adminService.getPayouts(pagination);
+  }
+
+  @Post('users/:id/retry-subaccount')
+  retrySubAccount(@Param('id') id: string) {
+    return this.adminService.retrySubAccount(id);
   }
 }

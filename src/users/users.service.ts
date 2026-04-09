@@ -1,4 +1,4 @@
-﻿import {
+import {
   Injectable,
   BadRequestException,
   NotFoundException,
@@ -25,7 +25,7 @@ export class UsersService {
     private cloudinaryService: CloudinaryService,
   ) { }
 
-  // Get all users â€” admin only, with optional role filter
+  // Get all users — admin only, with optional role filter
   async findAll(role?: UserRole) {
     return this.prisma.user.findMany({
       where: role ? { role } : undefined,
@@ -56,7 +56,6 @@ export class UsersService {
         locationLng: true,
         createdAt: true,
         updatedAt: true,
-        // never return passwordHash
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -108,6 +107,13 @@ export class UsersService {
 
     if (user.role !== UserRole.DRIVER) {
       throw new ForbiddenException('Approval status only applies to drivers');
+    }
+
+    // Hard Guard: Cannot approve a driver without a Monnify sub-account
+    if (dto.approvalStatus === 'APPROVED' && !user.monnifySubAccountCode) {
+      throw new BadRequestException(
+        'Cannot approve driver: Monnify sub-account must be created and verified first. Please click "Retry Sub-Account" button.',
+      );
     }
 
     const updated = await this.prisma.user.update({
@@ -214,13 +220,11 @@ export class UsersService {
   }
 
   // System: get all approved, online drivers
-  // Used by ride assignment algorithm in Phase 4
   async getAvailableDrivers(
     pickupLat?: number,
     pickupLng?: number,
     transmission?: string,
   ) {
-    // Get all online, approved, unblocked drivers with a location
     const drivers = await this.prisma.user.findMany({
       where: {
         role: UserRole.DRIVER,
@@ -250,7 +254,6 @@ export class UsersService {
         transmission: true,
         locationLat: true,
         locationLng: true,
-        // Check for active trips
         tripsAsDriver: {
           where: {
             status: {
@@ -262,12 +265,10 @@ export class UsersService {
       },
     });
 
-    // Filter out drivers with active trips
     const available = drivers.filter(
       (d) => d.tripsAsDriver.length === 0,
     );
 
-    // If pickup coords provided, calculate distance and sort by nearest
     if (pickupLat !== undefined && pickupLng !== undefined) {
       const withDistance = available.map((driver) => {
         const distanceKm = this.calculateDistance(
@@ -293,7 +294,6 @@ export class UsersService {
         };
       });
 
-      // Sort by distance â€” nearest first
       withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
       return withDistance;
     }
@@ -323,7 +323,7 @@ export class UsersService {
       Math.sin(dLng / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
-  // Update user's FCM token for push notifications
+
   async updateFcmToken(id: string, dto: UpdateFcmTokenDto) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
