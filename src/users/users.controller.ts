@@ -17,6 +17,7 @@ import { UsersService } from './users.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
+import { UpdateOnlineStatusDto } from './dto/update-online-status.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
@@ -114,7 +115,7 @@ export class UsersController {
     return this.usersService.updateLocation(user.sub, dto);
   }
 
-  // Driver goes online or offline
+  // Driver goes online or offline (going online requires current GPS coords)
   // PATCH /users/online
   @Roles(UserRole.DRIVER)
   @UseGuards(ApprovedDriverGuard)
@@ -122,9 +123,9 @@ export class UsersController {
   @Patch('online')
   updateOnlineStatus(
     @CurrentUser() user: any,
-    @Body('isOnline') isOnline: boolean,
+    @Body() dto: UpdateOnlineStatusDto,
   ) {
-    return this.usersService.updateOnlineStatus(user.sub, isOnline);
+    return this.usersService.updateOnlineStatus(user.sub, dto);
   }
 
   // PATCH /users/fcm-token

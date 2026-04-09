@@ -4,13 +4,17 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { AdminService } from './admin.service';
+import { UsersService } from '../users/users.service';
 import { PaginationDto } from '../common/dto/pagination.dto';
 
 @UseGuards(AuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private adminService: AdminService) {}
+  constructor(
+    private adminService: AdminService,
+    private usersService: UsersService,
+  ) {}
 
   @Get('dashboard')
   getDashboard() {
@@ -35,5 +39,10 @@ export class AdminController {
   @Post('users/:id/retry-subaccount')
   retrySubAccount(@Param('id') id: string) {
     return this.adminService.retrySubAccount(id);
+  }
+
+  @Get('users/:id/diagnose')
+  diagnoseDriver(@Param('id') id: string) {
+    return this.usersService.diagnoseDriverAvailability(id);
   }
 }

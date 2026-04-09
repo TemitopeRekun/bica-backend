@@ -560,7 +560,7 @@ export class RidesService {
 
       const { commissionAmount, driverEarnings } = this.calculateSplit(
         finalFare,
-        trip.commissionPercent,
+        (trip as any).commissionPercent,
       );
 
       // Update fare fields with final calculated values

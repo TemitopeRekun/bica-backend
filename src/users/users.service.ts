@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
+import { UpdateOnlineStatusDto } from './dto/update-online-status.dto';
 import { UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
@@ -61,7 +62,7 @@ export class UsersService {
     });
   }
 
-  // Get a single user by ID
+  // Get a single user by ID (User Dossier)
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
@@ -77,6 +78,8 @@ export class UsersService {
         walletBalance: true,
         isBlocked: true,
         carType: true,
+        carModel: true,
+        carYear: true,
         gender: true,
         address: true,
         nationality: true,
@@ -92,11 +95,26 @@ export class UsersService {
         locationLng: true,
         createdAt: true,
         updatedAt: true,
+        // Banking fields — required for Admin Dossier banking status
+        bankName: true,
+        bankCode: true,
+        accountNumber: true,
+        accountName: true,
+        monnifySubAccountCode: true,
       },
     });
 
     if (!user) throw new NotFoundException('User not found');
-    return user;
+
+    return {
+      ...user,
+      // Derived flags the frontend uses to drive the Approve button and Retry logic
+      subAccountActive: !!user.monnifySubAccountCode,
+      canRetrySubAccountSetup:
+        !user.monnifySubAccountCode &&
+        !!user.bankCode &&
+        !!user.accountNumber,
+    };
   }
 
   // Admin: approve or reject a driver
@@ -126,16 +144,34 @@ export class UsersService {
     return updated;
   }
 
-  // Driver toggles online/offline status
-  async updateOnlineStatus(id: string, isOnline: boolean) {
+  // Driver toggles online/offline — going online REQUIRES current GPS coords
+  async updateOnlineStatus(id: string, dto: UpdateOnlineStatusDto) {
+    const data: any = { isOnline: dto.isOnline };
+
+    // Atomically update location when going online so driver is
+    // never in the available pool without a known position
+    if (dto.isOnline && dto.lat !== undefined && dto.lng !== undefined) {
+      data.locationLat = dto.lat;
+      data.locationLng = dto.lng;
+    }
+
     const user = await this.prisma.user.update({
       where: { id },
-      data: { isOnline },
-      select: { id: true, name: true, isOnline: true, locationLat: true, locationLng: true },
+      data,
+      select: {
+        id: true,
+        name: true,
+        isOnline: true,
+        locationLat: true,
+        locationLng: true,
+      },
     });
 
-    this.logger.log(`Driver ${id} toggled ${isOnline ? 'online' : 'offline'}`);
-    this.ridesGateway.notifyDriverAvailabilityChanged(id, isOnline, {
+    this.logger.log(`Driver ${id} is now ${dto.isOnline ? 'ONLINE' : 'OFFLINE'}${
+      dto.isOnline ? ` at [${dto.lat}, ${dto.lng}]` : ''
+    }`);
+
+    this.ridesGateway.notifyDriverAvailabilityChanged(id, dto.isOnline, {
       locationLat: user.locationLat,
       locationLng: user.locationLng,
     });
@@ -336,5 +372,64 @@ export class UsersService {
       },
       select: { id: true, fcmToken: true, deviceType: true },
     });
+  }
+
+  // Admin: diagnose why a specific driver is not showing as available
+  async diagnoseDriverAvailability(driverId: string) {
+    const driver = await this.prisma.user.findUnique({
+      where: { id: driverId },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        approvalStatus: true,
+        isBlocked: true,
+        isOnline: true,
+        locationLat: true,
+        locationLng: true,
+        transmission: true,
+        monnifySubAccountCode: true,
+        tripsAsDriver: {
+          where: {
+            status: { in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'] },
+          },
+          select: { id: true, status: true },
+        },
+      },
+    });
+
+    if (!driver) throw new NotFoundException('Driver not found');
+
+    const checks = {
+      isDriver:           driver.role === 'DRIVER',
+      isApproved:         driver.approvalStatus === 'APPROVED',
+      isNotBlocked:       !driver.isBlocked,
+      isOnline:           driver.isOnline,
+      hasLocation:        driver.locationLat !== null && driver.locationLng !== null,
+      hasNoActiveTrip:    driver.tripsAsDriver.length === 0,
+      hasSubAccount:      !!driver.monnifySubAccountCode,
+    };
+
+    const failing = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([check]) => check);
+
+    return {
+      driverId: driver.id,
+      name: driver.name,
+      wouldAppearAsAvailable: failing.length === 0,
+      failingChecks: failing,
+      passingChecks: Object.entries(checks).filter(([, v]) => v).map(([k]) => k),
+      raw: {
+        role: driver.role,
+        approvalStatus: driver.approvalStatus,
+        isBlocked: driver.isBlocked,
+        isOnline: driver.isOnline,
+        locationLat: driver.locationLat,
+        locationLng: driver.locationLng,
+        transmission: driver.transmission,
+        activeTrips: driver.tripsAsDriver,
+      },
+    };
   }
 }
