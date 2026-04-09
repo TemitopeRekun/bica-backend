@@ -86,6 +86,8 @@ export class RidesGateway
   // Notify driver of new ride request
   notifyDriverNewRide(driverId: string, trip: any) {
     this.server.to(`user:${driverId}`).emit('ride:assigned', trip);
+    this.server.to(`user:${driverId}`).emit('ride:request', trip); // Redundant backup event
+    console.log(`📡 [WS] Notification sent to Driver ${driverId}: ride:assigned & ride:request`);
   }
 
   notifyDriverAvailabilityChanged(
@@ -168,13 +170,34 @@ export class RidesGateway
   }
 
   notifyTripStatusChanged(tripId: string, status: string, data: any) {
-    // Notify owner if present
+    const payload = { tripId, status, ...data };
+    
+    // 1. Notify owner if present (Generic status)
     if (data.ownerId) {
-      this.server.to(`user:${data.ownerId}`).emit('trip:status', { tripId, status, ...data });
+      this.server.to(`user:${data.ownerId}`).emit('trip:status', payload);
+      
+      // 🛡️ Sync-Burst: Also send specific progress milestone for the timeline
+      const milestoneMap: Record<string, any> = {
+        'ASSIGNED': 'assigned',
+        'ARRIVED': 'arrived',
+        'IN_PROGRESS': 'inprogress',
+        'COMPLETED': 'completed'
+      };
+      
+      if (milestoneMap[status]) {
+        this.notifyOwnerRideProgress(data.ownerId, {
+          tripId,
+          milestone: milestoneMap[status],
+          timestamp: new Date().toISOString(),
+          status
+        });
+        console.log(`📡 [WS] Sync-Burst 'ride:progress' [${milestoneMap[status]}] sent to Owner ${data.ownerId}`);
+      }
     }
-    // Notify driver if present
+    
+    // 2. Notify driver if present
     if (data.driverId) {
-      this.server.to(`user:${data.driverId}`).emit('trip:status', { tripId, status, ...data });
+      this.server.to(`user:${data.driverId}`).emit('trip:status', payload);
     }
   }
 }

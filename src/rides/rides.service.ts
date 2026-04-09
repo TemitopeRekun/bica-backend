@@ -266,6 +266,13 @@ export class RidesService {
     const otherPartyId = role === UserRole.OWNER ? trip.driverId : trip.ownerId;
     if (otherPartyId) {
       this.gateway.notifyTripStatusChanged(tripId, TripStatus.CANCELLED, updated);
+      
+      // 🛡️ Redundancy: Send explicit ride:cancelled event to clear driver UI
+      if (role === UserRole.OWNER && trip.driverId) {
+        this.gateway.server.to(`user:${trip.driverId}`).emit('ride:cancelled', { tripId });
+        this.logger.log(`📡 [WS] Cancellation sent to Driver ${trip.driverId} for Trip ${tripId}`);
+      }
+
       this.fcmService.sendToUser(otherPartyId, {
         title: 'Trip Cancelled',
         body: `The trip has been cancelled by the ${role.toLowerCase()}.`,
@@ -277,8 +284,35 @@ export class RidesService {
   }
 
   async updateStatus(tripId: string, userId: string, role: UserRole, dto: UpdateStatusDto) {
-    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    const trip = await this.prisma.trip.findUnique({ 
+      where: { id: tripId },
+      include: {
+        owner: { select: { id: true, name: true, phone: true } },
+        driver: { select: { id: true, name: true, phone: true, rating: true } },
+      }
+    });
     if (!trip) throw new NotFoundException('Trip not found');
+
+    // 🛡️ Resilience: If the trip is already at or past the requested status, just return it
+    // This prevents 400 errors if the app sends a stale/duplicate update
+    const statusPriority = {
+      [TripStatus.PENDING]: 0,
+      [TripStatus.SEARCHING]: 1,
+      [TripStatus.PENDING_ACCEPTANCE]: 2,
+      [TripStatus.ASSIGNED]: 3,
+      [TripStatus.ARRIVED]: 4,
+      [TripStatus.IN_PROGRESS]: 5,
+      [TripStatus.COMPLETED]: 6,
+      [TripStatus.CANCELLED]: -1,
+      [TripStatus.DECLINED]: -1,
+    };
+
+    if (statusPriority[trip.status] >= statusPriority[dto.status]) {
+      this.logger.warn(`🔁 [STALE_UPDATE] Trip ${tripId} is already ${trip.status}. Ignoring request to move to ${dto.status}.`);
+      // Re-broadcast fresh status to fix UI sync
+      this.gateway.notifyTripStatusChanged(tripId, trip.status, trip);
+      return trip;
+    }
 
     this.validateStatusTransition(trip, userId, role, dto.status);
 
@@ -308,6 +342,16 @@ export class RidesService {
       },
     });
 
+    // 🛡️ Sync-Burst: If we jumped from Pending Acceptance, ensure Owner app 'Unlocks' first
+    if (trip.status === TripStatus.PENDING_ACCEPTANCE && ([TripStatus.ASSIGNED, TripStatus.ARRIVED] as TripStatus[]).includes(dto.status)) {
+      this.gateway.notifyOwnerDriverAccepted(tripUpdate.ownerId, {
+        tripId: tripUpdate.id,
+        driver: tripUpdate.driver,
+        estimatedArrivalMins: 5 
+      });
+      console.log(`📡 [WS] Sync-Burst 'ride:accepted' sent to Owner ${tripUpdate.ownerId} (Stale bypass)`);
+    }
+
     this.gateway.notifyTripStatusChanged(tripId, dto.status, tripUpdate);
     this.notifyStatusChangeViaPush(tripUpdate, dto.status);
     return tripUpdate;
@@ -315,9 +359,20 @@ export class RidesService {
 
   private validateStatusTransition(trip: any, userId: string, role: UserRole, newStatus: TripStatus) {
     if (role === UserRole.DRIVER && trip.driverId !== userId) throw new ForbiddenException('Not your trip');
-    if (newStatus === TripStatus.ARRIVED && trip.status !== TripStatus.ASSIGNED) throw new BadRequestException('Invalid state');
-    if (newStatus === TripStatus.IN_PROGRESS && trip.status !== TripStatus.ARRIVED) throw new BadRequestException('Invalid state');
-    if (newStatus === TripStatus.COMPLETED && trip.status !== TripStatus.IN_PROGRESS) throw new BadRequestException('Invalid state');
+    
+    // Allow ARRIVED from both ASSIGNED or PENDING_ACCEPTANCE (in case of transition sync lag)
+    if (newStatus === TripStatus.ARRIVED && ![TripStatus.ASSIGNED, TripStatus.PENDING_ACCEPTANCE].includes(trip.status)) {
+      this.logger.error(`🙈 [STATE_FAILED] Trip ${trip.id} cannot move from ${trip.status} to ${newStatus}`);
+      throw new BadRequestException('Invalid state');
+    }
+    if (newStatus === TripStatus.IN_PROGRESS && trip.status !== TripStatus.ARRIVED) {
+      this.logger.error(`🙈 [STATE_FAILED] Trip ${trip.id} cannot move from ${trip.status} to ${newStatus}`);
+      throw new BadRequestException('Invalid state');
+    }
+    if (newStatus === TripStatus.COMPLETED && trip.status !== TripStatus.IN_PROGRESS) {
+      this.logger.error(`🙈 [STATE_FAILED] Trip ${trip.id} cannot move from ${trip.status} to ${newStatus}`);
+      throw new BadRequestException('Invalid state');
+    }
   }
 
   private async notifyStatusChangeViaPush(trip: any, status: TripStatus) {

@@ -95,10 +95,6 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
     },
     {
       provide: APP_INTERCEPTOR,
-      useClass: IdempotencyInterceptor,
-    },
-    {
-      provide: APP_INTERCEPTOR,
       useClass: AuditInterceptor,
     },
   ],
