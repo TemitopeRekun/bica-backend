@@ -166,4 +166,15 @@ export class RidesGateway
   notifyOwnerTripStatus(ownerId: string, data: any) {
     this.server.to(`user:${ownerId}`).emit('trip:status', data);
   }
+
+  notifyTripStatusChanged(tripId: string, status: string, data: any) {
+    // Notify owner if present
+    if (data.ownerId) {
+      this.server.to(`user:${data.ownerId}`).emit('trip:status', { tripId, status, ...data });
+    }
+    // Notify driver if present
+    if (data.driverId) {
+      this.server.to(`user:${data.driverId}`).emit('trip:status', { tripId, status, ...data });
+    }
+  }
 }

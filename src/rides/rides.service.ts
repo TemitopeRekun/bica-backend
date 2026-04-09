@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
@@ -17,6 +18,8 @@ import { FcmService } from '../notifications/fcm.service';
 
 @Injectable()
 export class RidesService {
+  private readonly logger = new Logger(RidesService.name);
+
   constructor(
     private prisma: PrismaService,
     private gateway: RidesGateway,
@@ -26,8 +29,6 @@ export class RidesService {
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
-  // Called at BOOKING time with Google's road distance + estimated mins
-  // Returns the estimated fare shown to owner before confirming
 
   private calculateEstimatedFare(
     distanceKm: number,
@@ -35,311 +36,93 @@ export class RidesService {
     settings: { baseFare: number; pricePerKm: number; timeRate: number },
   ): number {
     let price: number;
-
     if (distanceKm <= 4.5) {
-      // 4.5km Rule: Base 2000
       price = 2000;
       if (estimatedMins > 20) {
-        // Overtime: only charge for mins BEYOND 20
         price += (estimatedMins - 20) * settings.timeRate;
       }
     } else {
-      // Standard Rule for longer trips
       price =
         settings.baseFare +
         distanceKm * settings.pricePerKm +
         estimatedMins * settings.timeRate;
     }
-
-    // Absolute Minimum Guarantee
-    const finalPrice = Math.max(price, 2000);
-    return Math.round(finalPrice / 50) * 50;
+    return Math.round(price / 100) * 100;
   }
-
-  async acceptRide(tripId: string, driverId: string) {
-    const trip = await this.prisma.trip.findUnique({
-      where: { id: tripId },
-      include: {
-        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true, transmission: true } },
-      },
-    });
-
-    if (!trip) throw new NotFoundException('Trip not found');
-
-    if (trip.driverId !== driverId) {
-      throw new ForbiddenException('This trip was not assigned to you');
-    }
-
-    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) {
-      throw new BadRequestException(
-        `Cannot accept a trip with status ${trip.status}`,
-      );
-    }
-
-    const updated = await this.prisma.trip.update({
-      where: { id: tripId },
-      data: { status: TripStatus.ASSIGNED },
-      include: {
-        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true, transmission: true } },
-      },
-    });
-
-    // Notify owner that driver accepted
-    this.gateway.notifyOwnerDriverAccepted(trip.ownerId, {
-      tripId,
-      driver: updated.driver,
-      estimatedArrivalMins: 5, // could calculate this properly
-    });
-
-    this.gateway.notifyOwnerRideProgress(trip.ownerId, {
-      tripId: updated.id,
-      milestone: 'assigned',
-      timestamp: new Date().toISOString(),
-      status: updated.status,
-    });
-
-    this.adminRealtimeGateway.notifyTripUpdated('accepted', updated);
-
-    return updated;
-  }
-
-  async declineRide(tripId: string, driverId: string) {
-    const trip = await this.prisma.trip.findUnique({
-      where: { id: tripId },
-    });
-
-    if (!trip) throw new NotFoundException('Trip not found');
-
-    if (trip.driverId !== driverId) {
-      throw new ForbiddenException('This trip was not assigned to you');
-    }
-
-    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) {
-      throw new BadRequestException(
-        `Cannot decline a trip with status ${trip.status}`,
-      );
-    }
-
-    await this.prisma.trip.update({
-      where: { id: tripId },
-      data: { status: TripStatus.DECLINED },
-    });
-
-    // Notify owner to pick another driver
-    this.gateway.notifyOwnerDriverDeclined(trip.ownerId, {
-      tripId,
-      reason: 'declined',
-      message: 'Driver declined the request. Please select another driver.',
-    });
-
-    this.adminRealtimeGateway.notifyTripUpdated('declined', {
-      tripId,
-      driverId,
-    });
-    return { message: 'Ride declined successfully' };
-  }
-
-  // ─── FINAL FARE ENGINE ───────────────────────────────────────────
-  // Called at COMPLETION time with actual elapsed minutes
-  // Final fare = base fare + distance component + total elapsed minutes component
 
   private calculateFinalFare(
     distanceKm: number,
     actualMins: number,
     settings: { baseFare: number; pricePerKm: number; timeRate: number },
-  ): {
-    finalFare: number;
-    baseFare: number;
-    distanceComponent: number;
-    timeComponent: number;
-    totalMins: number;
-  } {
+  ) {
     let finalFare: number;
-    let baseFareValue = settings.baseFare;
-    let distanceComponent = distanceKm * settings.pricePerKm;
-    let timeComponent = actualMins * settings.timeRate;
-
     if (distanceKm <= 4.5) {
-      // Apply 4.5km rule logic
-      baseFareValue = 2000;
-      distanceComponent = 0; // Included in the 2000 base
-      
+      finalFare = 2000;
       if (actualMins > 20) {
-        timeComponent = (actualMins - 20) * settings.timeRate;
-      } else {
-        timeComponent = 0; // Included in the 2000 base
+        finalFare += (actualMins - 20) * settings.timeRate;
       }
-      
-      finalFare = baseFareValue + timeComponent;
     } else {
-      // Standard calculation
-      finalFare = baseFareValue + distanceComponent + timeComponent;
+      finalFare =
+        settings.baseFare +
+        distanceKm * settings.pricePerKm +
+        actualMins * settings.timeRate;
     }
 
-    // Absolute Minimum Guarantee
-    finalFare = Math.max(finalFare, 2000);
-    const roundedFare = Math.round(finalFare / 50) * 50;
+    const roundedFare = Math.round(finalFare / 100) * 100;
 
     return {
       finalFare: roundedFare,
-      baseFare: Math.round(baseFareValue),
-      distanceComponent: Math.round(distanceComponent),
-      timeComponent: Math.round(timeComponent),
+      baseFare: settings.baseFare,
+      distanceComponent: distanceKm * settings.pricePerKm,
+      timeComponent: actualMins * settings.timeRate,
       totalMins: actualMins,
     };
   }
 
-  private calculateSplit(
-    amount: number,
-    commissionPercent: number,
-  ): { commissionAmount: number; driverEarnings: number } {
-    const commissionAmount = Math.round(amount * (commissionPercent / 100));
-    const driverEarnings = amount - commissionAmount;
-    return { commissionAmount, driverEarnings };
+  private calculateSplit(totalAmount: number, commissionPercent: number) {
+    const commissionAmount = (totalAmount * commissionPercent) / 100;
+    return {
+      commissionAmount,
+      driverEarnings: totalAmount - commissionAmount,
+    };
   }
 
-  // ─── HAVERSINE (kept for driver proximity only) ───────────────────
-  // NOT used for fare calculation — only for finding nearest driver
-
-  private haversineDistance(
-    lat1: number,
-    lng1: number,
-    lat2: number,
-    lng2: number,
-  ): number {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  // ─── FIND NEAREST DRIVER ─────────────────────────────────────────
-
-  private async findNearestDriver(
-    pickupLat: number,
-    pickupLng: number,
-    transmission?: string,
-  ) {
-    const drivers = await this.prisma.user.findMany({
-      where: {
-        role: UserRole.DRIVER,
-        approvalStatus: 'APPROVED',
-        isBlocked: false,
-        isOnline: true,
-        locationLat: { not: null },
-        locationLng: { not: null },
-      },
-      select: {
-        id: true,
-        name: true,
-        rating: true,
-        avatarUrl: true,
-        transmission: true,
-        locationLat: true,
-        locationLng: true,
-      },
-    });
-
-    if (drivers.length === 0) return null;
-
-    const eligible = transmission
-      ? drivers.filter(
-        (d) =>
-          d.transmission === transmission || d.transmission === 'Both',
-      )
-      : drivers;
-
-    if (eligible.length === 0) return null;
-
-    const withDistance = eligible.map((driver) => ({
-      ...driver,
-      distanceKm: this.haversineDistance(
-        pickupLat,
-        pickupLng,
-        driver.locationLat!,
-        driver.locationLng!,
-      ),
-    }));
-
-    withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
-    const nearest = withDistance[0];
-    if (nearest.distanceKm > 50) return null;
-
-    return nearest;
-  }
-
-  // ─── CREATE RIDE ─────────────────────────────────────────────────
-  // distanceKm and estimatedMins now come from Google Distance Matrix
-  // (calculated on frontend via GET /locations/route, sent in body)
+  // ─── CORE RIDE ACTIONS ───────────────────────────────────────────
 
   async createRide(ownerId: string, dto: CreateRideDto) {
-    const settings = await this.prisma.systemSettings.findUnique({
-      where: { id: 1 },
+    const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
+    if (!settings) throw new NotFoundException('System settings not found');
+
+    const activeTrip = await this.prisma.trip.findFirst({
+      where: {
+        ownerId,
+        status: {
+          in: [
+            TripStatus.PENDING,
+            TripStatus.SEARCHING,
+            TripStatus.PENDING_ACCEPTANCE,
+            TripStatus.ASSIGNED,
+            TripStatus.IN_PROGRESS,
+          ],
+        },
+      },
     });
 
-    if (!settings) {
-      throw new BadRequestException('System settings not configured');
+    if (activeTrip) {
+      throw new ForbiddenException('You already have an active ride request');
+    }
+
+    if (dto.driverId && dto.driverId === ownerId) {
+      throw new BadRequestException('You cannot request a ride from yourself');
     }
 
     const isScheduled = !!dto.scheduledAt;
+    const amount = this.calculateEstimatedFare(dto.distanceKm, dto.estimatedMins ?? 0, settings);
+    const { commissionAmount, driverEarnings } = this.calculateSplit(amount, settings.commission);
 
-    if (!isScheduled) {
-      if (!dto.driverId) {
-        throw new BadRequestException('driverId is required for an immediate ride');
-      }
+    const tripStatus = isScheduled ? TripStatus.SCHEDULED : TripStatus.PENDING_ACCEPTANCE;
 
-      // Verify chosen driver is still available
-      const driver = await this.prisma.user.findUnique({
-        where: { id: dto.driverId },
-        include: {
-          tripsAsDriver: {
-            where: {
-              status: {
-                in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
-              },
-            },
-          },
-        },
-      });
-
-      if (!driver) {
-        throw new NotFoundException('Driver not found');
-      }
-
-      if (!driver.isOnline) {
-        throw new BadRequestException('This driver is no longer online');
-      }
-
-      if (driver.tripsAsDriver.length > 0) {
-        throw new BadRequestException(
-          'This driver has just been assigned another trip. Please select a different driver.',
-        );
-      }
-    }
-
-    const estimatedMins = dto.estimatedMins ?? 0;
-    const amount = this.calculateEstimatedFare(
-      dto.distanceKm,
-      estimatedMins,
-      settings,
-    );
-    const { commissionAmount, driverEarnings } = this.calculateSplit(
-      amount,
-      settings.commission,
-    );
-
-    const tripStatus = isScheduled 
-      ? TripStatus.SCHEDULED 
-      : TripStatus.PENDING_ACCEPTANCE;
+    this.logger.log(`📍 [RIDE REQUEST] Pickup → lat: ${dto.pickupLat} | lng: ${dto.pickupLng}`);
 
     const trip = await this.prisma.trip.create({
       data: {
@@ -357,393 +140,194 @@ export class RidesService {
         amount,
         commissionAmount,
         driverEarnings,
-        commissionPercent: settings.commission,
+        commissionPercent: settings.commission as any,
         scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
       },
       include: {
-        owner: {
-          select: { id: true, name: true, phone: true, avatarUrl: true },
-        },
-        driver: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            avatarUrl: true,
-            rating: true,
-            transmission: true,
-          },
-        },
+        owner: { select: { id: true, name: true, phone: true } },
+        driver: { select: { id: true, name: true, phone: true, rating: true } },
       },
     });
 
     if (isScheduled) {
-      // Schedule Job 15 mins before scheduled time
       const schedDate = new Date(dto.scheduledAt!);
-      const delayMs = schedDate.getTime() - Date.now() - (15 * 60 * 1000);
-      const finalDelay = Math.max(delayMs, 0);
-
-      await this.rideQueue.add(
-        'ride-search',
-        {
-          tripId: trip.id,
-          pickupLat: dto.pickupLat,
-          pickupLng: dto.pickupLng,
-          radiusKm: 5,
-          transmission: dto.transmission,
-        },
-        { delay: finalDelay },
-      );
-
-      const response = {
-        ...trip,
-        estimatedArrivalMins: null,
-      };
-
-      this.adminRealtimeGateway.notifyTripUpdated('created', response);
-      return response;
+      const delayMs = Math.max(schedDate.getTime() - Date.now() - (15 * 60 * 1000), 0);
+      await this.rideQueue.add('ride-search', { tripId: trip.id, pickupLat: dto.pickupLat, pickupLng: dto.pickupLng }, { delay: delayMs });
+    } else {
+      this.gateway.notifyDriverNewRide(dto.driverId!, trip);
+      this.fcmService.sendToUser(dto.driverId!, {
+        title: 'New Ride Request!',
+        body: `You have a new ride request from ${trip.owner.name}.`,
+        data: { tripId: trip.id, type: 'new_ride' },
+      }).catch(e => this.logger.error(`FCM Error: ${e.message}`));
     }
 
-    // Immediate Ride - Notify driver via WebSocket
-    this.gateway.notifyDriverNewRide(dto.driverId!, {
-      ...trip,
-      estimatedArrivalMins: null,
-    });
-
-    // Send Push Notification to driver
-    const ownerName = (trip as any).owner?.name || 'A user';
-    this.fcmService.sendToUser(dto.driverId!, {
-      title: 'New Ride Request!',
-      body: `You have a new ride request from ${ownerName}.`,
-      data: { tripId: trip.id, type: 'new_ride_request' },
-    }).catch(err => console.error('FCM Error in immediate ride:', err));
-
-    const response = {
-      ...trip,
-      estimatedArrivalMins: null,
-    };
-
-    this.adminRealtimeGateway.notifyTripUpdated('created', response);
-    return response;
-  }
-
-  async getCurrentRide(userId: string, userRole: UserRole) {
-    const participantFilter =
-      userRole === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
-
-    const include = {
-      owner: {
-        select: { id: true, name: true, phone: true, avatarUrl: true },
-      },
-      driver: {
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          avatarUrl: true,
-          rating: true,
-        },
-      },
-    };
-
-    const activeTrip = await this.prisma.trip.findFirst({
-      where: {
-        ...participantFilter,
-        status: {
-          in: [
-            TripStatus.PENDING_ACCEPTANCE,
-            TripStatus.ASSIGNED,
-            TripStatus.IN_PROGRESS,
-          ],
-        },
-      },
-      include,
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    if (activeTrip) {
-      return activeTrip;
-    }
-
-    return this.prisma.trip.findFirst({
-      where: {
-        ...participantFilter,
-        status: TripStatus.COMPLETED,
-        paymentStatus: {
-          in: [
-            PaymentStatus.UNPAID,
-            PaymentStatus.PENDING,
-            PaymentStatus.FAILED,
-          ],
-        },
-      },
-      include,
-      orderBy: { completedAt: 'desc' },
-    });
-  }
-
-  // ─── GET SINGLE TRIP ─────────────────────────────────────────────
-
-  async findOne(tripId: string, userId: string) {
-    const trip = await this.prisma.trip.findUnique({
-      where: { id: tripId },
-      include: {
-        owner: {
-          select: { id: true, name: true, phone: true, avatarUrl: true },
-        },
-        driver: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            avatarUrl: true,
-            rating: true,
-          },
-        },
-      },
-    });
-
-    if (!trip) throw new NotFoundException('Trip not found');
-
-    if (trip.ownerId !== userId && trip.driverId !== userId) {
-      throw new ForbiddenException('You do not have access to this trip');
-    }
-
+    this.adminRealtimeGateway.notifyTripUpdated('created', trip);
     return trip;
   }
 
-  // ─── UPDATE TRIP STATUS ──────────────────────────────────────────
+  async getHistory(userId: string, role: UserRole, pagination: PaginationDto) {
+    const where = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
 
-  async updateStatus(
-    tripId: string,
-    userId: string,
-    userRole: UserRole,
-    dto: UpdateStatusDto,
-  ) {
+    return this.prisma.trip.findMany({
+      where,
+      skip: pagination.skip,
+      take: pagination.take,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        owner: { select: { id: true, name: true, avatarUrl: true } },
+        driver: { select: { id: true, name: true, avatarUrl: true } },
+      },
+    });
+  }
+
+  async getCurrentRide(userId: string, role: UserRole) {
+    const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
+    return this.prisma.trip.findFirst({
+      where: {
+        ...filter,
+        status: { in: [TripStatus.PENDING_ACCEPTANCE, TripStatus.ASSIGNED, TripStatus.IN_PROGRESS] },
+      },
+      include: {
+        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  async findOne(id: string, userId: string) {
     const trip = await this.prisma.trip.findUnique({
+      where: { id },
+      include: {
+        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+      },
+    });
+    if (!trip) throw new NotFoundException('Trip not found');
+    if (trip.ownerId !== userId && trip.driverId !== userId) throw new ForbiddenException('Access denied');
+    return trip;
+  }
+
+  async acceptRide(tripId: string, driverId: string) {
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException('Trip not found');
+    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) throw new BadRequestException('Trip no longer available');
+
+    const updated = await this.prisma.trip.update({
       where: { id: tripId },
+      data: { status: TripStatus.ASSIGNED, driverId },
+      include: {
+        owner: { select: { id: true, name: true } },
+        driver: { select: { id: true, name: true, rating: true } },
+      },
     });
 
+    this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
+    this.fcmService.sendToUser(updated.ownerId, {
+      title: 'Driver Found!',
+      body: `${updated.driver?.name ?? 'A driver'} has accepted your ride.`,
+      data: { tripId, type: 'ride_accepted' },
+    }).catch(e => this.logger.error(`FCM Accept Error: ${e.message}`));
+
+    return updated;
+  }
+
+  async declineRide(tripId: string, driverId: string) {
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
     if (!trip) throw new NotFoundException('Trip not found');
 
-    this.validateStatusTransition(trip, userId, userRole, dto.status);
+    const updated = await this.prisma.trip.update({
+      where: { id: tripId },
+      data: { status: TripStatus.DECLINED },
+    });
 
-    const updateData: any = { status: dto.status };
+    this.gateway.notifyTripStatusChanged(tripId, TripStatus.DECLINED, { ownerId: trip.ownerId });
+    return updated;
+  }
 
-    // Record startedAt when driver begins the trip
-    if (dto.status === TripStatus.IN_PROGRESS) {
-      updateData.startedAt = new Date();
-    }
+  async cancelRide(tripId: string, userId: string, role: UserRole) {
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException('Trip not found');
 
-    // Calculate final fare when trip completes
-    if (dto.status === TripStatus.COMPLETED) {
-      updateData.completedAt = new Date();
-
-
-      const settings = await this.prisma.systemSettings.findUnique({
-        where: { id: 1 },
-
-      });
-
-      // Calculate actual elapsed minutes from startedAt
-      const startedAt = trip.startedAt ?? new Date();
-      const actualMins = Math.ceil(
-        (updateData.completedAt.getTime() - startedAt.getTime()) / 60000,
-      );
-
-      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } =
-        this.calculateFinalFare(
-          trip.distanceKm,
-          actualMins,
-          settings!,
-        );
-
-      const { commissionAmount, driverEarnings } = this.calculateSplit(
-        finalFare,
-        (trip as any).commissionPercent,
-      );
-
-      // Update fare fields with final calculated values
-      updateData.finalFare = finalFare;
-      updateData.amount = finalFare; // keep amount in sync
-      updateData.commissionAmount = commissionAmount;
-      updateData.driverEarnings = driverEarnings;
-
-      // Attach breakdown for response transparency
-      updateData.fareBreakdown = {
-        baseFare,
-        distanceKm: trip.distanceKm,
-        distanceComponent,
-        timeComponent,
-        totalMins,
-        estimatedMins: trip.estimatedMins ?? null,
-        actualMins,
-        finalFare,
-        driverEarnings,
-        commissionAmount,
-      };
-
-      if (trip.driverId) {
-        await this.prisma.user.update({
-          where: { id: trip.driverId },
-          data: {
-            totalTrips: { increment: 1 },
-          },
-        });
-
-        this.gateway.notifyOwnerTripCompleted(trip.ownerId, {
-          tripId: trip.id,
-          fareBreakdown: updateData.fareBreakdown,
-        });
-
-        await this.prisma.user.update({
-          where: { id: trip.ownerId },
-          data: { totalTrips: { increment: 1 } },
-        });
-      }
-    }
-
-    // Handle cancellation — no fare charged
-    if (dto.status === TripStatus.CANCELLED) {
-      updateData.amount = 0;
-      updateData.commissionAmount = 0;
-      updateData.driverEarnings = 0;
-      updateData.finalFare = 0;
+    if (trip.status === TripStatus.IN_PROGRESS || trip.status === TripStatus.COMPLETED) {
+      throw new BadRequestException('Cannot cancel trip once it has started');
     }
 
     const updated = await this.prisma.trip.update({
       where: { id: tripId },
-      data: updateData,
+      data: { status: TripStatus.CANCELLED },
       include: {
-        driver: {
-          select: { id: true, name: true, walletBalance: true },
-        },
-        owner: {
-          select: { id: true, name: true },
-        },
+        owner: { select: { id: true, name: true } },
+        driver: { select: { id: true, name: true } },
       },
     });
 
-    this.adminRealtimeGateway.notifyTripUpdated('status_changed', updated);
-
-    // Ride progress sync for owners
-    if (updated.status === TripStatus.ARRIVED) {
-      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
-        tripId: updated.id,
-        milestone: 'arrived',
-        timestamp: new Date().toISOString(),
-        status: updated.status,
-      });
-    } else if (updated.status === TripStatus.IN_PROGRESS) {
-      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
-        tripId: updated.id,
-        milestone: 'inprogress',
-        timestamp: new Date().toISOString(),
-        status: updated.status,
-      });
-    } else if (updated.status === TripStatus.COMPLETED) {
-      this.gateway.notifyOwnerRideProgress(updated.ownerId, {
-        tripId: updated.id,
-        milestone: 'completed',
-        timestamp: new Date().toISOString(),
-        status: updated.status,
-      });
+    const otherPartyId = role === UserRole.OWNER ? trip.driverId : trip.ownerId;
+    if (otherPartyId) {
+      this.gateway.notifyTripStatusChanged(tripId, TripStatus.CANCELLED, updated);
+      this.fcmService.sendToUser(otherPartyId, {
+        title: 'Trip Cancelled',
+        body: `The trip has been cancelled by the ${role.toLowerCase()}.`,
+        data: { tripId, type: 'ride_cancelled' },
+      }).catch(e => this.logger.error(`FCM Cancel Error: ${e.message}`));
     }
 
     return updated;
   }
 
-  // ─── STATUS TRANSITION RULES ─────────────────────────────────────
+  async updateStatus(tripId: string, userId: string, role: UserRole, dto: UpdateStatusDto) {
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException('Trip not found');
 
-  private validateStatusTransition(
-    trip: any,
-    userId: string,
-    userRole: UserRole,
-    newStatus: TripStatus,
-  ) {
-    const isOwner = trip.ownerId === userId;
-    const isDriver = trip.driverId === userId;
-    const isAdmin = userRole === UserRole.ADMIN;
+    this.validateStatusTransition(trip, userId, role, dto.status);
 
-    const allowed: Partial<Record<TripStatus, TripStatus[]>> = {
-      [TripStatus.PENDING_ACCEPTANCE]: [
-        TripStatus.ASSIGNED,
-        TripStatus.DECLINED,
-        TripStatus.CANCELLED,
-      ],
-      [TripStatus.ASSIGNED]: [TripStatus.ARRIVED, TripStatus.CANCELLED],
-      [TripStatus.ARRIVED]: [TripStatus.IN_PROGRESS, TripStatus.CANCELLED],
-      [TripStatus.IN_PROGRESS]: [TripStatus.COMPLETED],
-      [TripStatus.SEARCHING]: [TripStatus.CANCELLED],
-    };
-
-    const allowedNext = allowed[trip.status] ?? [];
-
-    if (!allowedNext.includes(newStatus)) {
-      throw new BadRequestException(
-        `Cannot transition from ${trip.status} to ${newStatus}`,
-      );
+    const updateData: any = { status: dto.status };
+    if (dto.status === TripStatus.IN_PROGRESS) updateData.startedAt = new Date();
+    if (dto.status === TripStatus.COMPLETED) {
+      updateData.completedAt = new Date();
+      const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
+      const startedAt = trip.startedAt ?? new Date();
+      const actualMins = Math.ceil((updateData.completedAt.getTime() - startedAt.getTime()) / 60000);
+      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins } = this.calculateFinalFare(trip.distanceKm, actualMins, settings!);
+      const { commissionAmount, driverEarnings } = this.calculateSplit(finalFare, (trip as any).commissionPercent);
+      
+      updateData.finalFare = finalFare;
+      updateData.amount = finalFare;
+      updateData.commissionAmount = commissionAmount;
+      updateData.driverEarnings = driverEarnings;
+      updateData.fareBreakdown = { baseFare, distanceKm: trip.distanceKm, distanceComponent, timeComponent, totalMins };
     }
 
-    if (
-      (
-        [TripStatus.ARRIVED, TripStatus.IN_PROGRESS, TripStatus.COMPLETED] as TripStatus[]
-      ).includes(newStatus) &&
-      !isDriver &&
-      !isAdmin
-    ) {
-      throw new ForbiddenException('Only the assigned driver can do this');
-    }
-
-    if (newStatus === TripStatus.CANCELLED && !isOwner && !isAdmin) {
-      throw new ForbiddenException('Only the owner can cancel this ride');
-    }
-  }
-
-  // ─── TRIP HISTORY ────────────────────────────────────────────────
-
-  async getHistory(userId: string, userRole: UserRole, pagination: PaginationDto) {
-    const where =
-      userRole === UserRole.ADMIN
-        ? {}
-        : userRole === UserRole.DRIVER
-          ? { driverId: userId }
-          : { ownerId: userId };
-
-    const [total, items] = await Promise.all([
-      this.prisma.trip.count({ where }),
-      this.prisma.trip.findMany({
-        where,
-        include: {
-          owner: {
-            select: { id: true, name: true, avatarUrl: true },
-          },
-          driver: {
-            select: { id: true, name: true, avatarUrl: true },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: pagination.skip,
-        take: pagination.take,
-      }),
-    ]);
-
-    return {
-      items,
-      meta: {
-        total,
-        page: pagination.page,
-        limit: pagination.limit,
-        totalPages: Math.ceil(total / pagination.limit!),
+    const tripUpdate = await this.prisma.trip.update({
+      where: { id: tripId },
+      data: updateData,
+      include: {
+        owner: { select: { id: true, name: true, phone: true } },
+        driver: { select: { id: true, name: true, phone: true, rating: true } },
       },
-    };
+    });
+
+    this.gateway.notifyTripStatusChanged(tripId, dto.status, tripUpdate);
+    this.notifyStatusChangeViaPush(tripUpdate, dto.status);
+    return tripUpdate;
   }
 
-  // ─── CANCEL RIDE ─────────────────────────────────────────────────
+  private validateStatusTransition(trip: any, userId: string, role: UserRole, newStatus: TripStatus) {
+    if (role === UserRole.DRIVER && trip.driverId !== userId) throw new ForbiddenException('Not your trip');
+    if (newStatus === TripStatus.ARRIVED && trip.status !== TripStatus.ASSIGNED) throw new BadRequestException('Invalid state');
+    if (newStatus === TripStatus.IN_PROGRESS && trip.status !== TripStatus.ARRIVED) throw new BadRequestException('Invalid state');
+    if (newStatus === TripStatus.COMPLETED && trip.status !== TripStatus.IN_PROGRESS) throw new BadRequestException('Invalid state');
+  }
 
-  async cancelRide(tripId: string, userId: string, userRole: UserRole) {
-    return this.updateStatus(tripId, userId, userRole, {
-      status: TripStatus.CANCELLED,
-    });
+  private async notifyStatusChangeViaPush(trip: any, status: TripStatus) {
+    const bodyMap = {
+      [TripStatus.ARRIVED]: 'Driver is at your pickup location.',
+      [TripStatus.IN_PROGRESS]: 'Your trip has begun.',
+      [TripStatus.COMPLETED]: 'Trip completed. Please proceed to payment.',
+    };
+    if (bodyMap[status]) {
+      this.fcmService.sendToUser(trip.ownerId, { title: 'Trip Update', body: bodyMap[status], data: { tripId: trip.id, status } }).catch(e => this.logger.error(`FCM Push Error: ${e.message}`));
+    }
   }
 }

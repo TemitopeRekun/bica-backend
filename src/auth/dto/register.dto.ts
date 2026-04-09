@@ -6,8 +6,26 @@ import {
   IsOptional,
   IsString,
   MinLength,
+  IsNotIn,
 } from 'class-validator';
 import { UserRole } from '@prisma/client';
+
+/**
+ * Monnify does NOT support split payments/sub-accounts for these
+ * Nigerian fintech / mobile-money bank codes.
+ * Drivers using these banks cannot receive platform payouts.
+ */
+const UNSUPPORTED_BANK_CODES = [
+  '999992', // OPay
+  '100004', // OPay (alt)
+  '999991', // PalmPay
+  '100033', // PalmPay (alt)
+  '999981', // Kuda Bank
+  '50211',  // Kuda Bank (alt)
+  '090267', // Kuda MFB
+  '50515',  // Moniepoint MFB
+  '566',    // VFD Microfinance Bank
+];
 
 export class RegisterDto {
   @IsString()
@@ -89,6 +107,10 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
+  @IsNotIn(UNSUPPORTED_BANK_CODES, {
+    message:
+      'This bank is not supported for driver payouts. Please use a commercial bank (GTBank, Access, Zenith, UBA, First Bank, etc.)',
+  })
   bankCode?: string;
 
   @IsOptional()
