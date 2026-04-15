@@ -51,7 +51,7 @@ async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     adapter,
-    { bufferLogs: true },
+    { bufferLogs: true, rawBody: true },
   );
 
   app.useLogger(app.get(Logger));

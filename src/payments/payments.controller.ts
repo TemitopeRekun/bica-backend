@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -32,10 +33,11 @@ export class PaymentsController {
 
   @Post('webhook')
   async handleWebhook(
+    @Req() req: any,
     @Headers('monnify-signature') signature: string,
     @Body() payload: any,
   ) {
-    const rawBody = JSON.stringify(payload);
+    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
 
     this.paymentsService
       .processWebhook(rawBody, signature, payload)
