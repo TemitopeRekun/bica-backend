@@ -45,7 +45,7 @@ async function bootstrap() {
   const adapter = new FastifyAdapter({ 
     logger: false, 
     bodyLimit: 10 * 1024 * 1024,
-    trustProxy: true // Essential for ngrok/proxy rate limiting
+    trustProxy: true 
   });
   
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -91,7 +91,12 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins.includes('*') ? true : corsOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Idempotency-Key'],
+    allowedHeaders: [
+      'Content-Type', 
+      'Authorization', 
+      'X-Idempotency-Key'
+    ],
+    credentials: true,
   });
 
   app.useGlobalPipes(
