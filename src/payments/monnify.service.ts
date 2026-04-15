@@ -242,8 +242,8 @@ export class MonnifyService {
   }
 
   async verifyTransaction(transactionReference: string): Promise<{
-    paid: boolean;
-    amount: number;
+    status: string;
+    amountPaid: number;
     paymentMethod: string;
   }> {
     const result = await this.request<{
@@ -256,8 +256,8 @@ export class MonnifyService {
     );
 
     return {
-      paid: result.paymentStatus === 'PAID',
-      amount: result.amountPaid,
+      status: result.paymentStatus,
+      amountPaid: result.amountPaid,
       paymentMethod: result.paymentMethod,
     };
   }

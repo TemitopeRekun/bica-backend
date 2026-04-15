@@ -409,6 +409,34 @@ export class PaymentsService {
       throw new ForbiddenException('You do not have access to this payment');
     }
 
+    // 🛡️ Proactive Self-Healing Verification
+    // If the local DB says PENDING but we have a transaction reference, 
+    // we reach out to Monnify to see if the webhook is just lagging.
+    if (trip.paymentStatus === 'PENDING' && trip.monnifyTxRef) {
+      try {
+        const verification = await this.monnify.verifyTransaction(trip.monnifyTxRef);
+        
+        if (['PAID', 'OVERPAID'].includes(verification.status)) {
+          this.logger.log(`🛡️ [PROACTIVE_SYNC] Trip ${trip.id} verified as ${verification.status} during status check.`);
+          await this.finalizePayment(trip, verification.amountPaid, verification.paymentMethod, { source: 'proactive_check' });
+          
+          // Refresh trip data for the response
+          trip.paymentStatus = PaymentStatus.PAID;
+          trip.paidAt = new Date();
+        } else if (verification.status === 'PARTIALLY_PAID') {
+          return {
+            tripId: trip.id,
+            paymentStatus: 'PARTIALLY_PAID',
+            amountPaid: verification.amountPaid,
+            amountRemaining: trip.amount - verification.amountPaid,
+            message: 'Partial payment received. Please settle the balance.',
+          };
+        }
+      } catch (error) {
+        this.logger.error(`Failed proactive verification for trip ${trip.id}: ${error.message}`);
+      }
+    }
+
     return {
       tripId: trip.id,
       paymentStatus: trip.paymentStatus,
@@ -463,46 +491,55 @@ export class PaymentsService {
     }
 
     const verification = await this.monnify.verifyTransaction(txRef);
-    if (!verification.paid) {
-      this.logger.warn(`Payment verification failed for trip ${trip.id}`);
-      await this.prisma.trip.update({
-        where: { id: trip.id },
-        data: { paymentStatus: 'FAILED' },
-      });
+    if (!['PAID', 'OVERPAID'].includes(verification.status)) {
+      this.logger.warn(`Payment verification failed for trip ${trip.id}. Status: ${verification.status}`);
+      
+      if (verification.status === 'EXPIRED' || verification.status === 'FAILED') {
+        await this.prisma.trip.update({
+          where: { id: trip.id },
+          data: { paymentStatus: 'FAILED' },
+        });
 
-      this.adminRealtimeGateway.notifyPaymentUpdated('failed', {
-        tripId: trip.id,
-        transactionReference: txRef,
-        paymentStatus: 'FAILED',
-        driverId: trip.driverId,
-      });
+        this.adminRealtimeGateway.notifyPaymentUpdated('failed', {
+          tripId: trip.id,
+          transactionReference: txRef,
+          paymentStatus: 'FAILED',
+          driverId: trip.driverId,
+        });
 
-      this.ridesGateway.notifyOwnerPaymentUpdated(trip.ownerId, {
-        tripId: trip.id,
-        paymentStatus: PaymentStatus.FAILED,
-        paidAt: null,
-        transactionReference: txRef,
-        message: 'Payment could not be verified. Please try again.',
-      });
+        this.ridesGateway.notifyOwnerPaymentUpdated(trip.ownerId, {
+          tripId: trip.id,
+          paymentStatus: PaymentStatus.FAILED,
+          paidAt: null,
+          transactionReference: txRef,
+          message: 'Payment could not be verified. Please try again.',
+        });
+      }
       return;
     }
 
+    await this.finalizePayment(trip, verification.amountPaid, verification.paymentMethod, payload);
+  }
+
+  /**
+   * 🛡️ SEAMLESS SETTLEMENT ENGINE
+   * Centralized logic to finalize a trip payment, credit wallets, and notify parties.
+   */
+  private async finalizePayment(trip: any, amountPaid: number, paymentMethod: string, rawPayload: any) {
     const paidAt = new Date();
+    const txRef = trip.monnifyTxRef;
 
     await this.prisma.$transaction(async (tx) => {
-      // 1. Lock the driver's user record to prevent race conditions during wallet updates
+      // 1. Lock the driver's user record to prevent race conditions
       await tx.$executeRaw`SELECT * FROM "User" WHERE id = ${trip.driverId} FOR UPDATE`;
 
-      // 2. Re-verify the status inside the transaction
+      // 2. Re-verify inside transaction
       const currentTrip = await tx.trip.findUnique({
         where: { id: trip.id },
         select: { paymentStatus: true },
       });
 
-      if (currentTrip?.paymentStatus === 'PAID') {
-        this.logger.warn(`Transaction already processed for trip ${trip.id}`);
-        return;
-      }
+      if (currentTrip?.paymentStatus === 'PAID') return;
 
       // 3. Update trip record
       await tx.trip.update({
@@ -517,13 +554,13 @@ export class PaymentsService {
       await tx.paymentRecord.create({
         data: {
           tripId: trip.id,
-          totalAmount: verification.amount,
+          totalAmount: amountPaid,
           driverAmount: trip.driverEarnings,
           platformAmount: trip.commissionAmount,
           monnifyTxRef: txRef,
-          paymentMethod: verification.paymentMethod,
+          paymentMethod: paymentMethod,
           paidAt,
-          webhookPayload: payload,
+          webhookPayload: rawPayload,
         },
       });
 
@@ -535,29 +572,27 @@ export class PaymentsService {
         },
       });
 
-      // 6. Audit Logging for Automated AML compliance
+      // 6. Audit Log
       await tx.auditLog.create({
         data: {
           userId: trip.driverId,
           action: 'WALLET_INCREMENT',
           entity: 'USER',
           entityId: trip.driverId,
-          oldValue: { txRef }, // For traceability
+          oldValue: { txRef },
           newValue: { amount: trip.driverEarnings, type: 'CR' },
-          metadata: { tripId: trip.id, provider: 'monnify' },
+          metadata: { tripId: trip.id, provider: 'monnify', amountPaid },
         },
       });
     });
 
-    this.logger.log(
-      `Payment processed for trip ${trip.id} - NGN ${verification.amount}`,
-    );
+    this.logger.log(`✅ [SETTLEMENT] Trip ${trip.id} finalized successfully. Amount: NGN ${amountPaid}`);
 
     this.adminRealtimeGateway.notifyPaymentUpdated('paid', {
       tripId: trip.id,
       transactionReference: txRef,
-      amount: verification.amount,
-      paymentMethod: verification.paymentMethod,
+      amount: amountPaid,
+      paymentMethod,
       paymentStatus: 'PAID',
       driverId: trip.driverId,
     });

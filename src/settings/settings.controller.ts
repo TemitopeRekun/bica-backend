@@ -7,7 +7,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 
-@Controller('settings')
+@Controller('admin/settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 

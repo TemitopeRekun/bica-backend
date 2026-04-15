@@ -108,6 +108,7 @@ export class RideProcessor extends WorkerHost {
     withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
 
     if (withDistance.length > 0) {
+      await job.updateProgress(50); // Found potential drivers
       // Find the nearest driver that is not busy
       for (const candidate of withDistance) {
         const isBusy = await this.prisma.trip.findFirst({
@@ -126,6 +127,8 @@ export class RideProcessor extends WorkerHost {
               driverId: candidate.id,
             },
           });
+
+          await job.updateProgress(100); // Ride assigned
 
           const completeTripData = await this.prisma.trip.findUnique({
             where: { id: trip.id },
@@ -174,6 +177,7 @@ export class RideProcessor extends WorkerHost {
     else if (radiusKm === 10) nextRadiusKm = 20;
 
     if (nextRadiusKm > 0) {
+      await job.updateProgress(radiusKm * 4); // E.g., 5km -> 20%, 10km -> 40%
       this.logger.log(`Escalating search for ${trip.id} to ${nextRadiusKm}km logic`);
       
       // Delay next search by 1 minute to allow drivers to come online

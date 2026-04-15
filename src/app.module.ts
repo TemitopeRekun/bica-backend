@@ -13,6 +13,8 @@ import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { BullModule } from '@nestjs/bullmq';
+import { BullBoardModule } from '@bull-board/nestjs';
+import { FastifyAdapter } from '@bull-board/fastify';
 import { NotificationsModule } from './notifications/notifications.module';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
@@ -81,6 +83,10 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
           },
         };
       },
+    }),
+    BullBoardModule.forRoot({
+      route: '/admin/queues',
+      adapter: FastifyAdapter,
     }),
     NotificationsModule,
   ],

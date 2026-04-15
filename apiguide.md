@@ -1106,7 +1106,7 @@ type RetrySubAccountResponse = {
 
 ## Settings Endpoints
 
-### `GET /settings`
+### `GET /admin/settings`
 
 Auth required: no
 
@@ -1125,7 +1125,7 @@ type SettingsResponse = {
 };
 ```
 
-### `PATCH /settings`
+### `PATCH /admin/settings`
 
 Auth required: yes
 

@@ -6,6 +6,8 @@ import { RideProcessor } from './jobs/ride.processor';
 import { AuthModule } from '../auth/auth.module';
 import { AdminRealtimeModule } from '../admin/admin-realtime.module';
 import { BullModule } from '@nestjs/bullmq';
+import { BullBoardModule } from '@bull-board/nestjs';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 
 @Module({
   imports: [
@@ -13,6 +15,10 @@ import { BullModule } from '@nestjs/bullmq';
     AdminRealtimeModule,
     BullModule.registerQueue({
       name: 'rides-queue',
+    }),
+    BullBoardModule.forFeature({
+      name: 'rides-queue',
+      adapter: BullMQAdapter,
     }),
   ],
   controllers: [RidesController],
