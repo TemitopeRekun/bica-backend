@@ -13,6 +13,11 @@ export class FcmService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
+    // Prevent multiple initializations if the module is initialized more than once
+    if (admin.apps.length > 0) {
+      return;
+    }
+
     const projectId = this.configService.get<string>('FIREBASE_PROJECT_ID');
     const clientEmail = this.configService.get<string>('FIREBASE_CLIENT_EMAIL');
     const privateKey = this.configService.get<string>('FIREBASE_PRIVATE_KEY');
@@ -25,26 +30,26 @@ export class FcmService implements OnModuleInit {
     }
 
     try {
-      // Master PEM formatting: Ensure 64-character line wrapping
-      let rawKey = privateKey.trim().replace(/^"|"$/g, '');
+      // 1. Handle common formatting issues: surrounding quotes and escaped newlines
+      let formattedKey = privateKey.trim().replace(/^"|"$/g, '');
       
-      const header = '-----BEGIN PRIVATE KEY-----';
-      const footer = '-----END PRIVATE KEY-----';
-      
-      // 1. Get just the base64 content
-      let content = rawKey
-        .replace(header, '')
-        .replace(footer, '')
-        .replace(/\s/g, ''); 
+      // Replace literal \n strings with actual newlines
+      formattedKey = formattedKey.replace(/\\n/g, '\n');
 
-      // 2. Wrap content at 64 characters (PEM standard)
-      const wrappedContent = content.match(/.{1,64}/g)?.join('\n') || '';
+      // 2. If the key still doesn't have internal newlines, it might be a single-line string
+      // that needs PEM wrapping (common in some environment variable managers)
+      if (!formattedKey.includes('\n', 30)) { // Check after the header
+        const header = '-----BEGIN PRIVATE KEY-----';
+        const footer = '-----END PRIVATE KEY-----';
+        
+        let content = formattedKey
+          .replace(header, '')
+          .replace(footer, '')
+          .replace(/\s/g, ''); 
 
-      // 3. Final re-assembly
-      const formattedKey = `${header}\n${wrappedContent}\n${footer}\n`;
-
-      this.logger.debug(`Formatted key check (header): ${formattedKey.startsWith(header)}`);
-      this.logger.debug(`Formatted key check (footer): ${formattedKey.trim().endsWith(footer)}`);
+        const wrappedContent = content.match(/.{1,64}/g)?.join('\n') || '';
+        formattedKey = `${header}\n${wrappedContent}\n${footer}\n`;
+      }
 
       admin.initializeApp({
         credential: admin.credential.cert({
