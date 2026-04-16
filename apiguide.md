@@ -5,8 +5,9 @@ This guide documents the backend contract the frontend should use for the curren
 ## Base URL
 
 - Local API base URL: `http://localhost:3001`
-- Socket.IO rides namespace: `http://localhost:3001/rides`
-- Socket.IO admin namespace: `http://localhost:3001/admin`
+- Production API base URL: `https://bica-backend-production.up.railway.app`
+- Socket.IO rides namespace: `http://localhost:3001/rides` (Production: `/rides`)
+- Socket.IO admin namespace: `http://localhost:3001/admin` (Production: `/admin`)
 
 ## Global Backend Behavior
 

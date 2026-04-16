@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminRealtimeGateway } from './admin-realtime.gateway';
+import { PaymentsService } from '../payments/payments.service';
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -10,20 +11,28 @@ describe('AdminService', () => {
   const mockPrisma = {
     user: {
       findMany: jest.fn(),
+      count: jest.fn(),
     },
     systemSettings: {
       findUnique: jest.fn(),
     },
     trip: {
       findMany: jest.fn(),
+      count: jest.fn(),
+      aggregate: jest.fn(),
     },
     payout: {
       findMany: jest.fn(),
+      count: jest.fn(),
     },
   };
 
   const mockAdminRealtime = {
     notifyUserUpdated: jest.fn(),
+  };
+
+  const mockPaymentsService = {
+    createDriverSubAccount: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -32,6 +41,7 @@ describe('AdminService', () => {
         AdminService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AdminRealtimeGateway, useValue: mockAdminRealtime },
+        { provide: PaymentsService, useValue: mockPaymentsService },
       ],
     }).compile();
 
@@ -68,22 +78,23 @@ describe('AdminService', () => {
       ];
 
       mockPrisma.user.findMany.mockResolvedValue(mockUsers);
+      mockPrisma.user.count.mockResolvedValue(3);
 
-      const result = await service.getUsers();
+      const result = await service.getUsers({ page: 1, limit: 10, skip: 0, take: 10 });
 
-      expect(result).toHaveLength(3);
+      expect(result.items).toHaveLength(3);
       
       // Driver 1: active sub account
-      expect(result[0].subAccountActive).toBe(true);
-      expect(result[0].canRetrySubAccountSetup).toBe(false);
+      expect(result.items[0].subAccountActive).toBe(true);
+      expect(result.items[0].canRetrySubAccountSetup).toBe(false);
 
       // Driver 2: can retry
-      expect(result[1].subAccountActive).toBe(false);
-      expect(result[1].canRetrySubAccountSetup).toBe(true);
+      expect(result.items[1].subAccountActive).toBe(false);
+      expect(result.items[1].canRetrySubAccountSetup).toBe(true);
 
       // Driver 3: cannot retry (no bank details)
-      expect(result[2].subAccountActive).toBe(false);
-      expect(result[2].canRetrySubAccountSetup).toBe(false);
+      expect(result.items[2].subAccountActive).toBe(false);
+      expect(result.items[2].canRetrySubAccountSetup).toBe(false);
     });
   });
 
@@ -92,9 +103,13 @@ describe('AdminService', () => {
       mockPrisma.user.findMany.mockResolvedValue([
         { id: 'driver-1', monnifySubAccountCode: 'SUB-1' }
       ]);
+      mockPrisma.user.count.mockResolvedValue(1);
       mockPrisma.trip.findMany.mockResolvedValue([]);
+      mockPrisma.trip.count.mockResolvedValue(0);
       mockPrisma.payout.findMany.mockResolvedValue([]);
+      mockPrisma.payout.count.mockResolvedValue(0);
       mockPrisma.systemSettings.findUnique.mockResolvedValue({ id: 1 });
+      mockPrisma.trip.aggregate.mockResolvedValue({ _sum: { commissionAmount: 0 } });
 
       const result = await service.getDashboard();
 
