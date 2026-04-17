@@ -82,7 +82,7 @@ async function bootstrap() {
   const config = app.get(ConfigService);
   const corsOrigins = (
     config.get<string>('CORS_ORIGINS') ??
-    'http://localhost:3001,http://localhost:5173'
+    'http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174'
   )
     .split(',')
     .map((origin) => origin.trim())
@@ -94,7 +94,9 @@ async function bootstrap() {
     allowedHeaders: [
       'Content-Type', 
       'Authorization', 
-      'X-Idempotency-Key'
+      'X-Idempotency-Key',
+      'X-Requested-With',
+      'Accept',
     ],
     credentials: true,
   });

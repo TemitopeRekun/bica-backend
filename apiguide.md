@@ -16,9 +16,18 @@ This guide documents the backend contract the frontend should use for the curren
 - Extra request fields are rejected
 - Unknown body/query fields can trigger `400 Bad Request`
 - CORS allowlist is controlled by `CORS_ORIGINS`
-- Default allowed origins:
 - `http://localhost:3000`
+- `http://localhost:3001`
 - `http://localhost:5173`
+- `http://localhost:5174`
+
+### Deploying to Production (e.g., Netlify)
+
+When you deploy your frontend to production (Netlify, Vercel, etc.):
+1. Get your production URL (e.g., `https://your-app.netlify.app`).
+2. Add it to the `CORS_ORIGINS` environment variable in your **Railway Dashboard**.
+3. Use a comma to separate multiple origins (e.g., `https://your-app.netlify.app,http://localhost:5173`).
+4. If you need to allow all origins temporarily (not recommended for production), set `CORS_ORIGINS` to `*`.
 
 ## Authentication
 
