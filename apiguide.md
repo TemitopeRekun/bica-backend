@@ -24,9 +24,9 @@ This guide documents the backend contract the frontend should use for the curren
 ### Deploying to Production (e.g., Netlify)
 
 When you deploy your frontend to production (Netlify, Vercel, etc.):
-1. Get your production URL (e.g., `https://your-app.netlify.app`).
+1. Get your production URL (e.g., `https://bicadriver.netlify.app`).
 2. Add it to the `CORS_ORIGINS` environment variable in your **Railway Dashboard**.
-3. Use a comma to separate multiple origins (e.g., `https://your-app.netlify.app,http://localhost:5173`).
+3. Use a comma to separate multiple origins (e.g., `https://bicadriver.netlify.app,http://localhost:5173`).
 4. If you need to allow all origins temporarily (not recommended for production), set `CORS_ORIGINS` to `*`.
 
 ## Authentication
