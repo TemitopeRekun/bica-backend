@@ -11,18 +11,26 @@ export class SettingsService {
   ) {}
 
   async getSettings() {
-    const settings = await this.prisma.systemSettings.findUnique({
+    return this.prisma.systemSettings.upsert({
       where: { id: 1 },
+      update: {},
+      create: {
+        id: 1,
+        baseFare: 500,
+        pricePerKm: 100,
+        timeRate: 50,
+        commission: 25,
+        autoApprove: false,
+        minimumFare: 2000,
+        minimumFareDistance: 4.5,
+        minimumFareDuration: 20,
+      },
     });
-    if (!settings) throw new NotFoundException('System settings not found');
-    return settings;
   }
 
   async updateSettings(dto: UpdateSettingsDto, adminId: string) {
-    const settings = await this.prisma.systemSettings.findUnique({
-      where: { id: 1 },
-    });
-    if (!settings) throw new NotFoundException('System settings not found');
+    // Ensure settings exist before updating
+    await this.getSettings();
 
     const updated = await this.prisma.systemSettings.update({
       where: { id: 1 },
