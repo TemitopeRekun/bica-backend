@@ -11,7 +11,10 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 
 @WebSocketGateway({
-  cors: { origin: '*' },
+  cors: { 
+    origin: (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174').split(',').map(o => o.trim()),
+    credentials: true
+  },
   namespace: '/rides',
 })
 export class RidesGateway
