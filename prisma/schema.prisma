@@ -120,6 +120,7 @@ model Trip {
   fareBreakdown    Json?
   paymentStatus   PaymentStatus  @default(UNPAID)
   monnifyTxRef    String?        @unique
+  paymentReference String?       @unique
   paidAt          DateTime?
   
   // 🛡️ Pricing Snapshots (SSOT)
