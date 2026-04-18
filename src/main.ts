@@ -109,6 +109,20 @@ async function bootstrap() {
     }),
   );
 
+  const requiredEnvVars = [
+    'JWT_SECRET',
+    'DATABASE_URL',
+    'REDIS_URL',
+    'MONNIFY_API_KEY',
+    'MONNIFY_SECRET_KEY',
+    'MONNIFY_BASE_URL',
+    'MONNIFY_CONTRACT_CODE',
+  ];
+  const missingVars = requiredEnvVars.filter((key) => !process.env[key]);
+  if (missingVars.length > 0) {
+    throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+  }
+
   await app.listen(process.env.PORT || 3001, '0.0.0.0');
 }
 

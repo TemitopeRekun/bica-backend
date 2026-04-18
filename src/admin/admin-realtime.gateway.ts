@@ -7,6 +7,8 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
@@ -18,20 +20,36 @@ import { Server, Socket } from 'socket.io';
 })
 export class AdminRealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect {
+  private readonly logger = new Logger(AdminRealtimeGateway.name);
+
+  constructor(private jwtService: JwtService) {}
+
   @WebSocketServer()
   server: Server;
 
   private adminSockets = new Map<string, string>();
 
+  private verifySocketToken(client: Socket): { sub: string; role: string } | null {
+    const token = client.handshake.auth?.token as string | undefined;
+    if (!token) return null;
+    try {
+      return this.jwtService.verify<{ sub: string; role: string }>(token, {
+        secret: process.env.JWT_SECRET,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   handleConnection(client: Socket) {
-    console.log(`Admin client connected: ${client.id}`);
+    this.logger.debug(`Admin client connected: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
     for (const [adminId, socketId] of this.adminSockets.entries()) {
       if (socketId === client.id) {
         this.adminSockets.delete(adminId);
-        console.log(`Admin ${adminId} disconnected socket ${client.id}`);
+        this.logger.debug(`Admin ${adminId} disconnected socket ${client.id}`);
         break;
       }
     }
@@ -42,9 +60,22 @@ export class AdminRealtimeGateway
     @MessageBody() data: { adminId: string },
     @ConnectedSocket() client: Socket,
   ) {
+    const payload = this.verifySocketToken(client);
+    if (payload !== null) {
+      if (payload.role !== 'ADMIN') {
+        this.logger.warn(`[WS] admin:register rejected — role is ${payload.role}, not ADMIN`);
+        client.emit('error', { message: 'Unauthorized: admin role required' });
+        return;
+      }
+      if (payload.sub !== data.adminId) {
+        this.logger.warn(`[WS] admin:register rejected — token sub ${payload.sub} !== claimed ${data.adminId}`);
+        client.emit('error', { message: 'Unauthorized: adminId mismatch' });
+        return;
+      }
+    }
     this.adminSockets.set(data.adminId, client.id);
     client.join('admins');
-    console.log(`Admin ${data.adminId} registered socket ${client.id}`);
+    this.logger.debug(`Admin ${data.adminId} registered socket ${client.id}`);
   }
 
   notifyUserUpdated(action: string, user: Record<string, unknown>) {

@@ -89,7 +89,7 @@ export class RideProcessor extends WorkerHost {
 
     const eligible = transmission
       ? drivers.filter(
-        (d) => d.transmission === transmission || d.transmission === 'Both',
+        (d) => d.transmission === transmission || d.transmission === 'BOTH',
       )
       : drivers;
 
@@ -119,14 +119,29 @@ export class RideProcessor extends WorkerHost {
         });
 
         if (!isBusy) {
-          // Assign to this driver and transition to PENDING_ACCEPTANCE
-          await this.prisma.trip.update({
-            where: { id: trip.id },
-            data: {
-              status: TripStatus.PENDING_ACCEPTANCE,
-              driverId: candidate.id,
-            },
+          // Atomically re-check and assign inside a transaction so two concurrent
+          // search workers cannot both assign to the same driver simultaneously.
+          const assigned = await this.prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT id FROM "User" WHERE id = ${candidate.id} FOR UPDATE`;
+
+            const stillBusy = await tx.trip.findFirst({
+              where: {
+                driverId: candidate.id,
+                status: { in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'] },
+              },
+            });
+
+            if (stillBusy) return false;
+
+            await tx.trip.update({
+              where: { id: trip.id },
+              data: { status: TripStatus.PENDING_ACCEPTANCE, driverId: candidate.id },
+            });
+
+            return true;
           });
+
+          if (!assigned) continue;
 
           await job.updateProgress(100); // Ride assigned
 

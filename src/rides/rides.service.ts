@@ -111,6 +111,16 @@ export class RidesService {
     const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
     if (!settings) throw new NotFoundException('System settings not found');
 
+    if (
+      typeof settings.commission !== 'number' ||
+      settings.commission < 0 ||
+      settings.commission > 100
+    ) {
+      throw new BadRequestException(
+        `Invalid commission rate configured (${settings.commission}). Must be 0–100.`,
+      );
+    }
+
     const activeTrip = await this.prisma.trip.findFirst({
       where: {
         ownerId,
@@ -392,7 +402,7 @@ export class RidesService {
         pricePerKm: (trip as any).pricePerKmSnapshot ?? 100,
         timeRate: (trip as any).timeRateSnapshot ?? 50,
         minimumFare: (trip as any).minimumFareSnapshot ?? 2000,
-        minimumFareDistance: (trip as any).minimumFareDistance ?? 4.5,
+        minimumFareDistance: (trip as any).minimumFareDistanceSnapshot ?? 4.5,
         minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20
       };
 
@@ -439,7 +449,7 @@ export class RidesService {
         driver: tripUpdate.driver,
         estimatedArrivalMins: 5 
       });
-      console.log(`📡 [WS] Sync-Burst 'ride:accepted' sent to Owner ${tripUpdate.ownerId} (Stale bypass)`);
+      this.logger.debug(`[WS] Sync-Burst ride:accepted → Owner ${tripUpdate.ownerId}`);
     }
 
     this.gateway.notifyTripStatusChanged(tripId, dto.status, tripUpdate);

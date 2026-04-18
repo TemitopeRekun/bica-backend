@@ -272,6 +272,10 @@ export class PaymentsService {
       throw new NotFoundException('Trip not found');
     }
 
+    if (!trip.owner) {
+      throw new NotFoundException('Trip owner not found');
+    }
+
     if (trip.ownerId !== requestingUserId) {
       throw new ForbiddenException('Only the trip owner can initiate payment');
     }
@@ -298,8 +302,7 @@ export class PaymentsService {
       );
     }
 
-    // 🕵️ EMERGENCY DIAGNOSTIC
-    console.log(`💳 [PAYMENT_INIT_DIAGNOSTIC] Trip: ${trip.id} | Amount: ${trip.amount} | Status: ${trip.status}`);
+    this.logger.debug(`[PAYMENT_INIT] Trip: ${trip.id} | Amount: ${trip.amount} | Status: ${trip.status}`);
 
     if (!trip.amount || trip.amount <= 0) {
       throw new BadRequestException('Invalid trip amount (0/null). Please ensure the trip is completed correctly.');
@@ -532,8 +535,8 @@ export class PaymentsService {
     const txRef = trip.monnifyTxRef;
 
     await this.prisma.$transaction(async (tx) => {
-      // 1. Lock the driver's user record to prevent race conditions
-      await tx.$executeRaw`SELECT * FROM "User" WHERE id = ${trip.driverId} FOR UPDATE`;
+      // 1. Lock the trip row to serialize concurrent webhook/proactive-check calls
+      await tx.$executeRaw`SELECT id FROM "Trip" WHERE id = ${trip.id} FOR UPDATE`;
 
       // 2. Re-verify inside transaction
       const currentTrip = await tx.trip.findUnique({
@@ -566,26 +569,30 @@ export class PaymentsService {
         },
       });
 
-      // 5. Update driver wallet balance
-      await tx.user.update({
-        where: { id: trip.driverId! },
-        data: {
-          walletBalance: { increment: trip.driverEarnings },
-        },
-      });
+      // 5. Update driver wallet balance (only if a driver is assigned)
+      if (trip.driverId) {
+        await tx.user.update({
+          where: { id: trip.driverId },
+          data: {
+            walletBalance: { increment: trip.driverEarnings },
+          },
+        });
 
-      // 6. Audit Log
-      await tx.auditLog.create({
-        data: {
-          userId: trip.driverId,
-          action: 'WALLET_INCREMENT',
-          entity: 'USER',
-          entityId: trip.driverId,
-          oldValue: { txRef },
-          newValue: { amount: trip.driverEarnings, type: 'CR' },
-          metadata: { tripId: trip.id, provider: 'monnify', amountPaid },
-        },
-      });
+        // 6. Audit Log
+        await tx.auditLog.create({
+          data: {
+            userId: trip.driverId,
+            action: 'WALLET_INCREMENT',
+            entity: 'USER',
+            entityId: trip.driverId,
+            oldValue: { txRef },
+            newValue: { amount: trip.driverEarnings, type: 'CR' },
+            metadata: { tripId: trip.id, provider: 'monnify', amountPaid },
+          },
+        });
+      } else {
+        this.logger.warn(`[SETTLEMENT] Trip ${trip.id} has no driverId — wallet increment skipped`);
+      }
     });
 
     this.logger.log(`✅ [SETTLEMENT] Trip ${trip.id} finalized successfully. Amount: NGN ${amountPaid}`);

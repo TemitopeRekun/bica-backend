@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Logger,
   Param,
   Post,
   Query,
@@ -24,6 +25,8 @@ import { PaymentsService } from './payments.service';
 @UseInterceptors(IdempotencyInterceptor)
 @Controller('payments')
 export class PaymentsController {
+  private readonly logger = new Logger(PaymentsController.name);
+
   constructor(private paymentsService: PaymentsService) {}
 
   @Get('banks')
@@ -41,7 +44,7 @@ export class PaymentsController {
 
     this.paymentsService
       .processWebhook(rawBody, signature, payload)
-      .catch((err) => console.error('Webhook processing error:', err));
+      .catch((err) => this.logger.error(`Webhook processing error: ${err?.message ?? err}`));
 
     return { status: 'received' };
   }

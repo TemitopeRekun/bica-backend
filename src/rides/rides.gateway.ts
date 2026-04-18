@@ -7,6 +7,8 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -19,17 +21,35 @@ import { PrismaService } from '../prisma/prisma.service';
 })
 export class RidesGateway
   implements OnGatewayConnection, OnGatewayDisconnect {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(RidesGateway.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private jwtService: JwtService,
+  ) {}
+
+  private verifySocketToken(client: Socket): string | null {
+    const token = client.handshake.auth?.token as string | undefined;
+    if (!token) return null;
+    try {
+      const payload = this.jwtService.verify<{ sub: string }>(token, {
+        secret: process.env.JWT_SECRET,
+      });
+      return payload.sub;
+    } catch {
+      return null;
+    }
+  }
 
   @WebSocketServer()
   server: Server;
 
   handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
+    this.logger.debug(`Client connected: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
+    this.logger.debug(`Client disconnected: ${client.id}`);
   }
 
   @SubscribeMessage('driver:register')
@@ -37,9 +57,15 @@ export class RidesGateway
     @MessageBody() data: { driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
+    const authedUserId = this.verifySocketToken(client);
+    if (authedUserId !== null && authedUserId !== data.driverId) {
+      this.logger.warn(`[WS] driver:register rejected — token sub ${authedUserId} !== claimed ${data.driverId}`);
+      client.emit('error', { message: 'Unauthorized: driverId mismatch' });
+      return;
+    }
     client.join(`user:${data.driverId}`);
-    client.join('drivers'); // Also join a general drivers room for broadcasts
-    console.log(`Driver ${data.driverId} joined room user:${data.driverId}`);
+    client.join('drivers');
+    this.logger.debug(`Driver ${data.driverId} joined room user:${data.driverId}`);
   }
 
   @SubscribeMessage('owner:register')
@@ -47,8 +73,14 @@ export class RidesGateway
     @MessageBody() data: { ownerId: string },
     @ConnectedSocket() client: Socket,
   ) {
+    const authedUserId = this.verifySocketToken(client);
+    if (authedUserId !== null && authedUserId !== data.ownerId) {
+      this.logger.warn(`[WS] owner:register rejected — token sub ${authedUserId} !== claimed ${data.ownerId}`);
+      client.emit('error', { message: 'Unauthorized: ownerId mismatch' });
+      return;
+    }
     client.join(`user:${data.ownerId}`);
-    console.log(`Owner ${data.ownerId} joined room user:${data.ownerId}`);
+    this.logger.debug(`Owner ${data.ownerId} joined room user:${data.ownerId}`);
   }
 
   @SubscribeMessage('driverlocation')
@@ -74,7 +106,7 @@ export class RidesGateway
     @ConnectedSocket() client: Socket,
   ) {
     client.join(`tracking:driver:${data.driverId}`);
-    console.log(`Socket ${client.id} tracking driver ${data.driverId}`);
+    this.logger.debug(`Socket ${client.id} tracking driver ${data.driverId}`);
   }
 
   @SubscribeMessage('untrackdriver')
@@ -83,14 +115,14 @@ export class RidesGateway
     @ConnectedSocket() client: Socket,
   ) {
     client.leave(`tracking:driver:${data.driverId}`);
-    console.log(`Socket ${client.id} stopped tracking driver ${data.driverId}`);
+    this.logger.debug(`Socket ${client.id} stopped tracking driver ${data.driverId}`);
   }
 
   // Notify driver of new ride request
   notifyDriverNewRide(driverId: string, trip: any) {
     this.server.to(`user:${driverId}`).emit('ride:assigned', trip);
-    this.server.to(`user:${driverId}`).emit('ride:request', trip); // Redundant backup event
-    console.log(`📡 [WS] Notification sent to Driver ${driverId}: ride:assigned & ride:request`);
+    this.server.to(`user:${driverId}`).emit('ride:request', trip);
+    this.logger.debug(`[WS] Notified driver ${driverId}: ride:assigned & ride:request`);
   }
 
   notifyDriverAvailabilityChanged(
@@ -99,7 +131,7 @@ export class RidesGateway
     payload?: Record<string, unknown>,
   ) {
     const event = isOnline ? 'driver:online' : 'driver:offline';
-    console.log(`Driver ${driverId} marked ${isOnline ? 'online' : 'offline'}`);
+    this.logger.debug(`Driver ${driverId} marked ${isOnline ? 'online' : 'offline'}`);
 
     // Notify the specific driver
     this.server.to(`user:${driverId}`).emit(event, {
@@ -156,8 +188,13 @@ export class RidesGateway
     @MessageBody() data: { tripId: string; driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    // Note: Added driverId to payload for simplicity in Room logic, 
-    // but usually you want to verify this via socket metadata or JWT.
+    const authedUserId = this.verifySocketToken(client);
+    if (authedUserId !== null && authedUserId !== data.driverId) {
+      this.logger.warn(`[WS] driver:arrived rejected — token sub ${authedUserId} !== claimed ${data.driverId}`);
+      client.emit('error', { message: 'Unauthorized: driverId mismatch' });
+      return;
+    }
+
     const trip = await this.prisma.trip.findUnique({
       where: { id: data.tripId },
       select: { ownerId: true, driverId: true },
@@ -198,7 +235,7 @@ export class RidesGateway
           timestamp: new Date().toISOString(),
           status
         });
-        console.log(`📡 [WS] Sync-Burst 'ride:progress' [${milestoneMap[status]}] sent to Owner ${data.ownerId}`);
+        this.logger.debug(`[WS] Sync-Burst ride:progress [${milestoneMap[status]}] → Owner ${data.ownerId}`);
       }
     }
     

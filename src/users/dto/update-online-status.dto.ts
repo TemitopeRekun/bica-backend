@@ -1,4 +1,4 @@
-import { IsBoolean, IsNumber, IsOptional, ValidateIf } from 'class-validator';
+import { IsBoolean, IsNumber, Max, Min, ValidateIf } from 'class-validator';
 
 export class UpdateOnlineStatusDto {
   @IsBoolean()
@@ -10,6 +10,8 @@ export class UpdateOnlineStatusDto {
    */
   @ValidateIf((o) => o.isOnline === true)
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   lat: number;
 
   /**
@@ -18,5 +20,7 @@ export class UpdateOnlineStatusDto {
    */
   @ValidateIf((o) => o.isOnline === true)
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   lng: number;
 }

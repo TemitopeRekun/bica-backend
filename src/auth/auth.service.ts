@@ -130,11 +130,7 @@ export class AuthService {
 
     if (dto.role === UserRole.DRIVER) {
       setImmediate(() => {
-        this.paymentsService
-          .createDriverSubAccount(user.id)
-          .catch((err) =>
-            console.error('Sub account creation failed:', err),
-          );
+        this.paymentsService.createDriverSubAccount(user.id);
       });
     }
 
