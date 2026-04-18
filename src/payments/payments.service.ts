@@ -13,6 +13,7 @@ import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { RidesGateway } from '../rides/rides.gateway';
 import { MonnifyApiException, MonnifyService } from './monnify.service';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { FcmService } from '../notifications/fcm.service';
 
 type DriverPayoutProfile = {
   id: string;
@@ -41,6 +42,7 @@ export class PaymentsService {
     private config: ConfigService,
     private adminRealtimeGateway: AdminRealtimeGateway,
     private ridesGateway: RidesGateway,
+    private fcmService: FcmService,
   ) {}
 
   private async getDriverPayoutProfile(
@@ -604,6 +606,22 @@ export class PaymentsService {
       transactionReference: txRef,
       message: 'Payment confirmed.',
     });
+
+    if (trip.driverId) {
+      this.ridesGateway.notifyDriverPaymentUpdated(trip.driverId, {
+        tripId: trip.id,
+        paymentStatus: PaymentStatus.PAID,
+        paidAt: paidAt.toISOString(),
+        amount: amountPaid,
+        message: 'Payment received successfully.',
+      });
+
+      this.fcmService.sendToUser(trip.driverId, {
+        title: 'Payment Received! 💰',
+        body: `You have received a payment of NGN ${amountPaid.toLocaleString()} for your last trip.`,
+        data: { tripId: trip.id, type: 'payment_received' },
+      }).catch(e => this.logger.error(`FCM Push Error: ${e.message}`));
+    }
   }
 
   async getWalletSummary(driverId: string) {

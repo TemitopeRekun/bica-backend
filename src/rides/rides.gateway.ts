@@ -137,6 +137,10 @@ export class RidesGateway
     this.server.to(`user:${ownerId}`).emit('payment:updated', data);
   }
 
+  notifyDriverPaymentUpdated(driverId: string, data: any) {
+    this.server.to(`user:${driverId}`).emit('payment:updated', data);
+  }
+
   // Notify owner of ride progress (milestones)
   notifyOwnerRideProgress(ownerId: string, data: {
     tripId: string;
