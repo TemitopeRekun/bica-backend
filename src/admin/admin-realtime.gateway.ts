@@ -61,18 +61,24 @@ export class AdminRealtimeGateway
     @ConnectedSocket() client: Socket,
   ) {
     const payload = this.verifySocketToken(client);
-    if (payload !== null) {
-      if (payload.role !== 'ADMIN') {
-        this.logger.warn(`[WS] admin:register rejected — role is ${payload.role}, not ADMIN`);
-        client.emit('error', { message: 'Unauthorized: admin role required' });
-        return;
-      }
-      if (payload.sub !== data.adminId) {
-        this.logger.warn(`[WS] admin:register rejected — token sub ${payload.sub} !== claimed ${data.adminId}`);
-        client.emit('error', { message: 'Unauthorized: adminId mismatch' });
-        return;
-      }
+    if (!payload) {
+      this.logger.warn(`[WS] admin:register rejected — no valid token provided`);
+      client.emit('error', { message: 'Unauthorized: Authentication required' });
+      return;
     }
+
+    if (payload.role !== 'ADMIN') {
+      this.logger.warn(`[WS] admin:register rejected — role is ${payload.role}, not ADMIN`);
+      client.emit('error', { message: 'Unauthorized: admin role required' });
+      return;
+    }
+
+    if (payload.sub !== data.adminId) {
+      this.logger.warn(`[WS] admin:register rejected — token sub ${payload.sub} !== claimed ${data.adminId}`);
+      client.emit('error', { message: 'Unauthorized: adminId mismatch' });
+      return;
+    }
+
     this.adminSockets.set(data.adminId, client.id);
     client.join('admins');
     this.logger.debug(`Admin ${data.adminId} registered socket ${client.id}`);

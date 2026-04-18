@@ -57,18 +57,24 @@ export class RidesGateway
     @ConnectedSocket() client: Socket,
   ) {
     const payload = this.verifySocketToken(client);
-    if (payload !== null) {
-      if (payload.role !== 'DRIVER') {
-        this.logger.warn(`[WS] driver:register rejected — role is ${payload.role}, not DRIVER`);
-        client.emit('error', { message: 'Unauthorized: driver role required' });
-        return;
-      }
-      if (payload.sub !== data.driverId) {
-        this.logger.warn(`[WS] driver:register rejected — token sub ${payload.sub} !== claimed ${data.driverId}`);
-        client.emit('error', { message: 'Unauthorized: driverId mismatch' });
-        return;
-      }
+    if (!payload) {
+      this.logger.warn(`[WS] driver:register rejected — no valid token provided`);
+      client.emit('error', { message: 'Unauthorized: Authentication required' });
+      return;
     }
+    
+    if (payload.role !== 'DRIVER') {
+      this.logger.warn(`[WS] driver:register rejected — role is ${payload.role}, not DRIVER`);
+      client.emit('error', { message: 'Unauthorized: driver role required' });
+      return;
+    }
+    
+    if (payload.sub !== data.driverId) {
+      this.logger.warn(`[WS] driver:register rejected — token sub ${payload.sub} !== claimed ${data.driverId}`);
+      client.emit('error', { message: 'Unauthorized: driverId mismatch' });
+      return;
+    }
+
     client.join(`user:${data.driverId}`);
     client.join('drivers');
     this.logger.debug(`Driver ${data.driverId} joined room user:${data.driverId}`);
@@ -80,7 +86,13 @@ export class RidesGateway
     @ConnectedSocket() client: Socket,
   ) {
     const payload = this.verifySocketToken(client);
-    if (payload !== null && payload.sub !== data.ownerId) {
+    if (!payload) {
+      this.logger.warn(`[WS] owner:register rejected — no valid token provided`);
+      client.emit('error', { message: 'Unauthorized: Authentication required' });
+      return;
+    }
+
+    if (payload.sub !== data.ownerId) {
       this.logger.warn(`[WS] owner:register rejected — token sub ${payload.sub} !== claimed ${data.ownerId}`);
       client.emit('error', { message: 'Unauthorized: ownerId mismatch' });
       return;
