@@ -41,6 +41,7 @@ enum PaymentStatus {
   PENDING
   PAID
   FAILED
+  CANCELLED
 }
 
 enum DisbursementStatus {
