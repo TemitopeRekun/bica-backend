@@ -222,7 +222,7 @@ export class MonnifyService {
       paymentDescription: `BICA ride payment - Trip ${params.tripId}`,
       currencyCode: 'NGN',
       contractCode,
-      redirectUrl: this.config.get<string>('MONNIFY_REDIRECT_URL') ?? 'https://bicadrive.app/payment/complete',
+      redirectUrl: this.config.get<string>('MONNIFY_REDIRECT_URL') ?? 'https://bicadriver.netlify.app/#/payment/complete',
       paymentMethods: ['ACCOUNT_TRANSFER', 'CARD'],
       incomeSplitConfig: [
         {
