@@ -311,7 +311,7 @@ export class PaymentsService {
     // Use snapshotted commission from the trip record
     const driverSplitPercent = 100 - trip.commissionPercent;
 
-    const { checkoutUrl, transactionReference } =
+    const { checkoutUrl, transactionReference, paymentReference } =
       await this.monnify.initiateTransaction({
         amount: trip.amount,
         tripId: trip.id,
@@ -337,6 +337,7 @@ export class PaymentsService {
         data: {
           paymentStatus: 'PENDING',
           monnifyTxRef: transactionReference,
+          paymentReference,
         },
       });
 
@@ -347,7 +348,7 @@ export class PaymentsService {
           action: 'PAYMENT_INITIATED',
           entity: 'TRIP',
           entityId: tripId,
-          newValue: { transactionReference, amount: trip.amount },
+          newValue: { transactionReference, paymentReference, amount: trip.amount },
           metadata: { provider: 'monnify' },
         },
       });

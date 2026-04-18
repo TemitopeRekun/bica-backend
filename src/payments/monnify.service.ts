@@ -207,14 +207,19 @@ export class MonnifyService {
     ownerName: string;
     driverSubAccountCode: string;
     driverSplitPercent: number;
-  }): Promise<{ checkoutUrl: string; transactionReference: string }> {
+  }): Promise<{ checkoutUrl: string; transactionReference: string; paymentReference: string }> {
     const contractCode = this.config.get<string>('MONNIFY_CONTRACT_CODE');
+
+    // Strip hyphens from the UUID and append a base-36 timestamp to guarantee
+    // uniqueness across retries while staying well under Monnify's 50-char limit.
+    // Format: BICA-<32 hex chars>-<~8 base-36 chars> ≈ 46 chars max.
+    const paymentReference = `BICA-${params.tripId.replace(/-/g, '')}-${Date.now().toString(36)}`;
 
     const payload = {
       amount: params.amount,
       customerName: params.ownerName,
       customerEmail: params.ownerEmail,
-      paymentReference: `BICA-${params.tripId}`,
+      paymentReference,
       paymentDescription: `BICA ride payment - Trip ${params.tripId}`,
       currencyCode: 'NGN',
       contractCode,
@@ -238,6 +243,7 @@ export class MonnifyService {
     return {
       checkoutUrl: result.checkoutUrl,
       transactionReference: result.transactionReference,
+      paymentReference,
     };
   }
 
