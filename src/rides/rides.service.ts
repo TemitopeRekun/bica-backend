@@ -175,6 +175,9 @@ export class RidesService {
         driverEarnings,
         commissionPercent: settings.commission as any,
         scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
+        // 🔄 Schema Alignment: Explicitly initialize optional unique fields
+        paymentReference: null,
+        monnifyTxRef: null,
         // 🛡️ Lock in the Snapshot (SSOT)
         baseFareSnapshot: settings.baseFare,
         pricePerKmSnapshot: settings.pricePerKm,
@@ -191,9 +194,9 @@ export class RidesService {
           totalMins: dto.estimatedMins,
           isEstimate: true,
           pricingBranch: fareDetails.pricingBranch,
-          minimumFareDistanceSnapshot: settings.minimumFareDistance // Storing it in JSON since column doesn't exist
+          minimumFareDistanceSnapshot: settings.minimumFareDistance 
         },
-      } as any,
+      },
       include: {
         owner: { select: { id: true, name: true, phone: true } },
         driver: { select: { id: true, name: true, phone: true, rating: true } },

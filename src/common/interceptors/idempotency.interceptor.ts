@@ -42,45 +42,61 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const userId = request.user?.id || 'anon';
     const cacheKey = `idempotency:${userId}:${key}`;
 
-    // Atomically acquire the processing lock — eliminates the TOCTOU gap between
-    // a GET check and a subsequent SET that two concurrent requests could race through.
-    const acquired = await this.redis.setIfNotExists(
-      cacheKey,
-      { status: 'PROCESSING' },
-      this.TTL_PROCESSING,
-    );
+    try {
+      // Atomically acquire the processing lock — eliminates the TOCTOU gap between
+      // a GET check and a subsequent SET that two concurrent requests could race through.
+      const acquired = await this.redis.setIfNotExists(
+        cacheKey,
+        { status: 'PROCESSING' },
+        this.TTL_PROCESSING,
+      );
 
-    if (!acquired) {
-      // Key already existed — read what's there
-      const cached = await this.redis.get<IdempotencyRecord>(cacheKey);
+      if (!acquired) {
+        // Key already existed — read what's there
+        const cached = await this.redis.get<IdempotencyRecord>(cacheKey);
 
-      if (cached?.status === 'COMPLETED') {
-        this.logger.debug(`[Hit] Returning cached response for: ${cacheKey}`);
-        return of(cached.response);
+        if (cached?.status === 'COMPLETED') {
+          this.logger.debug(`[Hit] Returning cached response for: ${cacheKey}`);
+          return of(cached.response);
+        }
+
+        this.logger.warn(`[Conflict] Request already in progress for: ${cacheKey}`);
+        throw new ConflictException(
+          'Request with this idempotency key is already in progress.',
+        );
       }
 
-      this.logger.warn(`[Conflict] Request already in progress for: ${cacheKey}`);
-      throw new ConflictException(
-        'Request with this idempotency key is already in progress.',
+      this.logger.debug(`[Lock] Acquired PROCESSING lock for: ${cacheKey}`);
+
+      return next.handle().pipe(
+        tap(async (response) => {
+          try {
+            // Cache successful response
+            await this.redis.set(
+              cacheKey,
+              { status: 'COMPLETED', response },
+              this.TTL_COMPLETED,
+            );
+          } catch (e) {
+            this.logger.error(`[Redis] Failed to cache successful response: ${e.message}`);
+          }
+        }),
+        catchError(async (error) => {
+          try {
+            // On error, delete the key to allow retry
+            await this.redis.del(cacheKey);
+          } catch (e) {
+            this.logger.error(`[Redis] Failed to clear lock on error: ${e.message}`);
+          }
+          return throwError(() => error);
+        }),
       );
+    } catch (e) {
+      if (e instanceof ConflictException) throw e;
+      
+      this.logger.error(`[Idempotency] Fail-open: Redis is unavailable. Proceeding without duplicate protection. Error: ${e.message}`);
+      return next.handle();
     }
-
-    this.logger.debug(`[Lock] Acquired PROCESSING lock for: ${cacheKey}`);
-
-    return next.handle().pipe(
-      tap(async (response) => {
-        // Cache successful response
-        await this.redis.set(
-          cacheKey,
-          { status: 'COMPLETED', response },
-          this.TTL_COMPLETED,
-        );
-      }),
-      catchError(async (error) => {
-        // On error, delete the key to allow retry
-        await this.redis.del(cacheKey);
-        return throwError(() => error);
-      }),
-    );
+    }
   }
 }
