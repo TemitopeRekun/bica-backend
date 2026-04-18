@@ -76,9 +76,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
           this.TTL_COMPLETED,
         );
       }),
-      catchError((error) => {
+      catchError(async (error) => {
         // On error, delete the key to allow retry
-        this.redis.del(cacheKey).catch(() => {});
+        await this.redis.del(cacheKey);
         return throwError(() => error);
       }),
     );

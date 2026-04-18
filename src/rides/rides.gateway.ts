@@ -28,14 +28,13 @@ export class RidesGateway
     private jwtService: JwtService,
   ) {}
 
-  private verifySocketToken(client: Socket): string | null {
+  private verifySocketToken(client: Socket): { sub: string, role: string } | null {
     const token = client.handshake.auth?.token as string | undefined;
     if (!token) return null;
     try {
-      const payload = this.jwtService.verify<{ sub: string }>(token, {
+      return this.jwtService.verify<{ sub: string, role: string }>(token, {
         secret: process.env.JWT_SECRET,
       });
-      return payload.sub;
     } catch {
       return null;
     }
@@ -57,11 +56,18 @@ export class RidesGateway
     @MessageBody() data: { driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const authedUserId = this.verifySocketToken(client);
-    if (authedUserId !== null && authedUserId !== data.driverId) {
-      this.logger.warn(`[WS] driver:register rejected — token sub ${authedUserId} !== claimed ${data.driverId}`);
-      client.emit('error', { message: 'Unauthorized: driverId mismatch' });
-      return;
+    const payload = this.verifySocketToken(client);
+    if (payload !== null) {
+      if (payload.role !== 'DRIVER') {
+        this.logger.warn(`[WS] driver:register rejected — role is ${payload.role}, not DRIVER`);
+        client.emit('error', { message: 'Unauthorized: driver role required' });
+        return;
+      }
+      if (payload.sub !== data.driverId) {
+        this.logger.warn(`[WS] driver:register rejected — token sub ${payload.sub} !== claimed ${data.driverId}`);
+        client.emit('error', { message: 'Unauthorized: driverId mismatch' });
+        return;
+      }
     }
     client.join(`user:${data.driverId}`);
     client.join('drivers');
@@ -73,9 +79,9 @@ export class RidesGateway
     @MessageBody() data: { ownerId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const authedUserId = this.verifySocketToken(client);
-    if (authedUserId !== null && authedUserId !== data.ownerId) {
-      this.logger.warn(`[WS] owner:register rejected — token sub ${authedUserId} !== claimed ${data.ownerId}`);
+    const payload = this.verifySocketToken(client);
+    if (payload !== null && payload.sub !== data.ownerId) {
+      this.logger.warn(`[WS] owner:register rejected — token sub ${payload.sub} !== claimed ${data.ownerId}`);
       client.emit('error', { message: 'Unauthorized: ownerId mismatch' });
       return;
     }
@@ -188,9 +194,9 @@ export class RidesGateway
     @MessageBody() data: { tripId: string; driverId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const authedUserId = this.verifySocketToken(client);
-    if (authedUserId !== null && authedUserId !== data.driverId) {
-      this.logger.warn(`[WS] driver:arrived rejected — token sub ${authedUserId} !== claimed ${data.driverId}`);
+    const payload = this.verifySocketToken(client);
+    if (payload !== null && payload.sub !== data.driverId) {
+      this.logger.warn(`[WS] driver:arrived rejected — token sub ${payload.sub} !== claimed ${data.driverId}`);
       client.emit('error', { message: 'Unauthorized: driverId mismatch' });
       return;
     }

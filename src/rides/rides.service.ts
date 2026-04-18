@@ -181,6 +181,7 @@ export class RidesService {
         timeRateSnapshot: settings.timeRate,
         minimumFareSnapshot: (settings as any).minimumFare ?? 2000,
         minimumFareDurationSnapshot: (settings as any).minimumFareDuration ?? 20,
+        // minimumFareDistance is missing from schema, but we'll include it in fareBreakdown JSON below
         fareBreakdown: {
           totalAmount: amount,
           baseFare: fareDetails.baseFare,
@@ -189,7 +190,8 @@ export class RidesService {
           timeComponent: fareDetails.timeComponent,
           totalMins: dto.estimatedMins,
           isEstimate: true,
-          pricingBranch: fareDetails.pricingBranch
+          pricingBranch: fareDetails.pricingBranch,
+          minimumFareDistanceSnapshot: settings.minimumFareDistance // Storing it in JSON since column doesn't exist
         },
       } as any,
       include: {
@@ -402,7 +404,7 @@ export class RidesService {
         pricePerKm: (trip as any).pricePerKmSnapshot ?? 100,
         timeRate: (trip as any).timeRateSnapshot ?? 50,
         minimumFare: (trip as any).minimumFareSnapshot ?? 2000,
-        minimumFareDistance: (trip as any).minimumFareDistanceSnapshot ?? 4.5,
+        minimumFareDistance: (trip as any).fareBreakdown?.minimumFareDistanceSnapshot ?? 4.5,
         minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20
       };
 

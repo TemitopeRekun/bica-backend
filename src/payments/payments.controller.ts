@@ -42,9 +42,8 @@ export class PaymentsController {
   ) {
     const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
 
-    this.paymentsService
-      .processWebhook(rawBody, signature, payload)
-      .catch((err) => this.logger.error(`Webhook processing error: ${err?.message ?? err}`));
+    await this.paymentsService
+      .processWebhook(rawBody, signature, payload);
 
     return { status: 'received' };
   }
