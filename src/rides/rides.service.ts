@@ -240,33 +240,39 @@ export class RidesService {
   }
 
   async getCurrentRide(userId: string, role: UserRole) {
-    const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
-    const trip = await this.prisma.trip.findFirst({
-      where: {
-        ...filter,
-        status: { 
-          in: [
-            TripStatus.PENDING_ACCEPTANCE, 
-            TripStatus.ASSIGNED, 
-            TripStatus.ARRIVED, // 🛡️ Fix: Don't disappear after arrival
-            TripStatus.IN_PROGRESS
-          ] 
+    try {
+      const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
+      const trip = await this.prisma.trip.findFirst({
+        where: {
+          ...filter,
+          status: { 
+            in: [
+              TripStatus.PENDING_ACCEPTANCE, 
+              TripStatus.ASSIGNED, 
+              TripStatus.ARRIVED, 
+              TripStatus.IN_PROGRESS
+            ] 
+          },
         },
-      },
-      include: {
-        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+        include: {
+          owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+          driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
 
-    if (trip) {
-      this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] for ${role} ${userId}`);
-    } else {
-      this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+      if (trip) {
+        this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] for ${role} ${userId}`);
+      } else {
+        this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+      }
+
+      return trip;
+    } catch (error) {
+      this.logger.error(`❌ [REFRESH_ERROR] Failed to query current ride for ${role} ${userId}: ${error.message}`);
+      // Safety: Return null instead of 500 Internal Server Error to avoid breaking the frontend UI.
+      return null;
     }
-
-    return trip;
   }
 
   async findOne(id: string, userId: string) {
