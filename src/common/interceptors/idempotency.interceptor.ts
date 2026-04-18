@@ -97,6 +97,5 @@ export class IdempotencyInterceptor implements NestInterceptor {
       this.logger.error(`[Idempotency] Fail-open: Redis is unavailable. Proceeding without duplicate protection. Error: ${e.message}`);
       return next.handle();
     }
-    }
   }
 }

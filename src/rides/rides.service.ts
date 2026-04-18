@@ -196,7 +196,7 @@ export class RidesService {
           pricingBranch: fareDetails.pricingBranch,
           minimumFareDistanceSnapshot: settings.minimumFareDistance 
         },
-      },
+      } as any,
       include: {
         owner: { select: { id: true, name: true, phone: true } },
         driver: { select: { id: true, name: true, phone: true, rating: true } },
