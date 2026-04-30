@@ -5,6 +5,7 @@ import {
   Body,
   UseGuards,
   Request,
+  Logger,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
@@ -14,17 +15,20 @@ import { AuthGuard } from '../common/guards/auth.guard';
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
   constructor(private authService: AuthService) {}
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('register')
   register(@Body() dto: RegisterDto) {
+    this.logger.log(`📝 Registration attempt for phone: ${dto.phone}`);
     return this.authService.register(dto);
   }
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   login(@Body() dto: LoginDto) {
+    this.logger.log(`🔑 Login attempt for email: ${dto.email}`);
     return this.authService.login(dto);
   }
 

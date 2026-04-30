@@ -92,17 +92,9 @@ async function bootstrap() {
   logger.log(`🛡️ CORS Origins Allowed: ${corsOrigins.join(', ')}`);
 
   app.enableCors({
-    origin: corsOrigins.includes('*') ? true : corsOrigins,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type', 
-      'Authorization', 
-      'X-Idempotency-Key',
-      'x-idempotency-key',
-      'X-Requested-With',
-      'Accept',
-      'Origin',
-    ],
+    origin: true, // Reflect the request origin
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'PUT'],
+    allowedHeaders: '*', // Permissive for debugging
     credentials: true,
   });
 
