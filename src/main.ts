@@ -92,10 +92,12 @@ async function bootstrap() {
   logger.log(`🛡️ CORS Origins Allowed: ${corsOrigins.join(', ')}`);
 
   app.enableCors({
-    origin: true, // Reflect the request origin
+    origin: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'PUT'],
-    allowedHeaders: '*', // Permissive for debugging
+    allowedHeaders: '*',
     credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
 
   app.useGlobalPipes(
