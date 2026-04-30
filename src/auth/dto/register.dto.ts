@@ -100,6 +100,19 @@ export class RegisterDto {
   @IsBoolean()
   backgroundCheckAccepted?: boolean;
 
+  // Aliases for frontend compatibility
+  @IsOptional()
+  @IsString()
+  licenseImage?: string;
+
+  @IsOptional()
+  @IsString()
+  selfieImage?: string;
+
+  @IsOptional()
+  @IsString()
+  ninImage?: string;
+
   // Bank details - required for drivers
   @IsOptional()
   @IsString()
