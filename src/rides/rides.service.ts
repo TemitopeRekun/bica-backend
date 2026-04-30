@@ -251,6 +251,8 @@ export class RidesService {
           status: { 
             in: [
               TripStatus.PENDING_ACCEPTANCE, 
+              TripStatus.SEARCHING,
+              TripStatus.SCHEDULED,
               TripStatus.ASSIGNED, 
               TripStatus.ARRIVED, 
               TripStatus.IN_PROGRESS
