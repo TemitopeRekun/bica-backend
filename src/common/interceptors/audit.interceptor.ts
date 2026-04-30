@@ -31,41 +31,53 @@ export class AuditInterceptor implements NestInterceptor {
     }
 
     return next.handle().pipe(
-      tap(async (response) => {
-        try {
-          // Identify the entity and ID from the URL (e.g., /users/:id -> User, :id)
-          const urlParts = url.split('/').filter(Boolean);
-          const entity = urlParts[0]?.toUpperCase() || 'UNKNOWN';
-          const entityId = urlParts[1] || null;
-
-          // Sanitize body (remove sensitive fields)
-          const sanitizedBody = { ...body };
-          const sensitiveFields = ['password', 'passwordHash', 'secret', 'token', 'apiKey'];
-          sensitiveFields.forEach((field) => {
-            if (field in sanitizedBody) {
-              sanitizedBody[field] = '*****';
-            }
-          });
-
-          await this.prisma.auditLog.create({
-            data: {
-              userId: user?.id || user?.sub || null,
-              action: `${method}_${url}`,
-              entity,
-              entityId,
-              newValue: sanitizedBody,
-              ipAddress: ip,
-              userAgent,
-              metadata: {
-                statusCode: context.switchToHttp().getResponse().statusCode,
-                path: url,
-              },
-            },
-          });
-        } catch (error) {
+      tap((response) => {
+        // Fire-and-forget to avoid blocking the response stream or causing async leaks
+        this.logAction(context, response).catch((error) => {
           this.logger.error(`Failed to create audit log: ${error.message}`);
-        }
+        });
       }),
     );
+  }
+
+  private async logAction(context: ExecutionContext, response: any): Promise<void> {
+    const request = context.switchToHttp().getRequest();
+    const { method, url, body, user, ip } = request;
+    const userAgent = request.headers['user-agent'];
+
+    try {
+      // Identify the entity and ID from the URL
+      const urlParts = url.split('/').filter(Boolean);
+      const entity = urlParts[0]?.toUpperCase() || 'UNKNOWN';
+      const entityId = urlParts[1] || null;
+
+      // Sanitize body (remove sensitive fields)
+      const sanitizedBody = { ...body };
+      const sensitiveFields = ['password', 'passwordHash', 'secret', 'token', 'apiKey'];
+      sensitiveFields.forEach((field) => {
+        if (field in sanitizedBody) {
+          sanitizedBody[field] = '*****';
+        }
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          userId: user?.id || user?.sub || null,
+          action: `${method}_${url}`,
+          entity,
+          entityId,
+          newValue: sanitizedBody,
+          ipAddress: ip,
+          userAgent,
+          metadata: {
+            statusCode: context.switchToHttp().getResponse().statusCode,
+            path: url,
+          },
+        },
+      });
+    } catch (error) {
+      // Error is caught in the caller's .catch()
+      throw error;
+    }
   }
 }

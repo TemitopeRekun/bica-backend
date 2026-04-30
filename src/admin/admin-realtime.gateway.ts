@@ -13,7 +13,7 @@ import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
   cors: { 
-    origin: (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174').split(',').map(o => o.trim()),
+    origin: (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174,https://bicadriver.netlify.app').split(',').map(o => o.trim()),
     credentials: true
   },
   namespace: '/admin',
