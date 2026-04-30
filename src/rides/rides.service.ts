@@ -292,6 +292,9 @@ export class RidesService {
   }
 
   async acceptRide(tripId: string, driverId: string, acceptanceImageUrl: string) {
+    // Generate 4-digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
     try {
       const updated = await this.prisma.trip.update({
         where: { 

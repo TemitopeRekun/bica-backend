@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   UseInterceptors,
+  BadRequestException,
 } from '@nestjs/common';
 import { RidesService } from "./rides.service";
 import { CreateRideDto } from './dto/create-ride.dto';
