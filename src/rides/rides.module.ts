@@ -8,11 +8,13 @@ import { AdminRealtimeModule } from '../admin/admin-realtime.module';
 import { BullModule } from '@nestjs/bullmq';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 
 @Module({
   imports: [
     forwardRef(() => AuthModule), 
     AdminRealtimeModule,
+    CloudinaryModule,
     BullModule.registerQueue({
       name: 'rides-queue',
     }),

@@ -20,12 +20,39 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { TripStatus, UserRole } from '@prisma/client';
+import { CloudinaryService } from '../cloudinary/cloudinary.service';
+import type { FastifyRequest } from 'fastify';
+import { Req } from '@nestjs/common';
 
 @UseGuards(AuthGuard, RolesGuard)
 @UseInterceptors(IdempotencyInterceptor)
 @Controller('rides')
 export class RidesController {
-  constructor(private ridesService: RidesService) { }
+  constructor(
+    private ridesService: RidesService,
+    private cloudinaryService: CloudinaryService
+  ) { }
+
+  @Post('upload-photo')
+  async uploadPhoto(
+    @CurrentUser() user: any,
+    @Req() req: FastifyRequest,
+    @Body('image') image?: string,
+    @Body('folder') folder: string = 'rides',
+  ) {
+    if (req.isMultipart()) {
+      const file = await req.file();
+      if (!file) throw new BadRequestException('Image file is required');
+      const buffer = await file.toBuffer();
+      const base64 = `data:${file.mimetype};base64,${buffer.toString('base64')}`;
+      const url = await this.cloudinaryService.uploadImage(base64, `bica/${folder}`);
+      return { url };
+    }
+    
+    if (!image) throw new BadRequestException('Image payload is required');
+    const url = await this.cloudinaryService.uploadImage(image, `bica/${folder}`);
+    return { url };
+  }
 
   // Owner books a ride
   // POST /rides
@@ -64,8 +91,9 @@ export class RidesController {
   acceptRide(
     @Param('id') id: string,
     @CurrentUser() user: any,
+    @Body() dto: { acceptanceImageUrl: string }, // Using inline for now to avoid import issues or just import it
   ) {
-    return this.ridesService.acceptRide(id, user.sub);
+    return this.ridesService.acceptRide(id, user.sub, dto.acceptanceImageUrl);
   }
 
   // Driver declines a ride request
@@ -110,5 +138,15 @@ export class RidesController {
     @CurrentUser() user: any,
   ) {
     return this.ridesService.cancelRide(id, user.sub, user.role);
+  }
+
+  // Generate new OTP after failed attempts
+  @Roles(UserRole.DRIVER)
+  @Post(':id/regenerate-otp')
+  regenerateOtp(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.ridesService.regenerateOtp(id, user.sub);
   }
 }

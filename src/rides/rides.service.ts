@@ -291,28 +291,63 @@ export class RidesService {
     return trip;
   }
 
-  async acceptRide(tripId: string, driverId: string) {
+  async acceptRide(tripId: string, driverId: string, acceptanceImageUrl: string) {
     const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
     if (!trip) throw new NotFoundException('Trip not found');
     if (trip.status !== TripStatus.PENDING_ACCEPTANCE) throw new BadRequestException('Trip no longer available');
 
+    // Generate 4-digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
     const updated = await this.prisma.trip.update({
       where: { id: tripId },
-      data: { status: TripStatus.ASSIGNED, driverId },
+      data: { 
+        status: TripStatus.ASSIGNED, 
+        driverId,
+        otp,
+        acceptanceImageUrl,
+        otpAttempts: 0
+      },
       include: {
-        owner: { select: { id: true, name: true } },
-        driver: { select: { id: true, name: true, rating: true } },
+        owner: { select: { id: true, name: true, phone: true } },
+        driver: { select: { id: true, name: true, rating: true, avatarUrl: true } },
       },
     });
 
     this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
     this.fcmService.sendToUser(updated.ownerId, {
       title: 'Driver Found!',
-      body: `${updated.driver?.name ?? 'A driver'} has accepted your ride.`,
-      data: { tripId, type: 'ride_accepted' },
+      body: `${updated.driver?.name ?? 'A driver'} has accepted your ride. Verification Code: ${otp}`,
+      data: { tripId, type: 'ride_accepted', otp },
     }).catch(e => this.logger.error(`FCM Accept Error: ${e.message}`));
 
     return updated;
+  }
+
+  async regenerateOtp(tripId: string, driverId: string) {
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException('Trip not found');
+    if (trip.driverId !== driverId) throw new ForbiddenException('Not your trip');
+    if (trip.status !== TripStatus.ARRIVED) throw new BadRequestException('Can only regenerate PIN when arrived');
+
+    const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
+    const updated = await this.prisma.trip.update({
+      where: { id: tripId },
+      data: { otp: newOtp, otpAttempts: 0 },
+      include: {
+        owner: { select: { id: true, name: true } },
+      }
+    });
+
+    // Notify owner of new PIN
+    this.gateway.server.to(`user:${updated.ownerId}`).emit('ride:otp_regenerated', { tripId, otp: newOtp });
+    this.fcmService.sendToUser(updated.ownerId, {
+      title: 'New Verification Code',
+      body: `Your new ride verification code is ${newOtp}`,
+      data: { tripId, otp: newOtp, type: 'otp_regenerated' }
+    }).catch(e => this.logger.error(`FCM Regenerate Error: ${e.message}`));
+
+    return { success: true, message: 'New PIN sent to owner' };
   }
 
   async declineRide(tripId: string, driverId: string) {
@@ -399,7 +434,34 @@ export class RidesService {
     this.validateStatusTransition(trip, userId, role, dto.status);
 
     const updateData: any = { status: dto.status };
-    if (dto.status === TripStatus.IN_PROGRESS) updateData.startedAt = new Date();
+    
+    if (dto.status === TripStatus.IN_PROGRESS) {
+      // 🛡️ PIN Verification Logic
+      if (!dto.otp) {
+        throw new BadRequestException('Verification code (OTP) is required to start the trip');
+      }
+
+      if (trip.otp !== dto.otp) {
+        const newAttempts = (trip.otpAttempts || 0) + 1;
+        await this.prisma.trip.update({
+          where: { id: tripId },
+          data: { otpAttempts: newAttempts }
+        });
+
+        if (newAttempts >= 5) {
+          throw new BadRequestException('Too many failed attempts. Please request a new PIN from the owner.');
+        }
+
+        throw new BadRequestException(`Incorrect PIN. Attempt ${newAttempts} of 5.`);
+      }
+
+      updateData.startedAt = new Date();
+      updateData.carFrontUrl = dto.carFrontUrl;
+      updateData.carBackUrl = dto.carBackUrl;
+      updateData.carLeftUrl = dto.carLeftUrl;
+      updateData.carRightUrl = dto.carRightUrl;
+    }
+
     if (dto.status === TripStatus.COMPLETED) {
       updateData.completedAt = new Date();
       

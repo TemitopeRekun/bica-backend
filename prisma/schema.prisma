@@ -135,6 +135,13 @@ model Trip {
   ownerId          String
   driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
   driverId         String?
+  otp              String?
+  acceptanceImageUrl String?
+  carFrontUrl      String?
+  carBackUrl       String?
+  carLeftUrl       String?
+  carRightUrl      String?
+  otpAttempts      Int         @default(0)
   payout           Payout?
   paymentRecord   PaymentRecord?
   tripAuditLogs   TripAuditLog[]
