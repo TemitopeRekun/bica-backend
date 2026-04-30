@@ -118,6 +118,30 @@ export class RidesGateway
     });
   }
 
+  @SubscribeMessage('ride:cancel')
+  async handleRideCancel(
+    @MessageBody() data: { tripId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const trip = await this.prisma.trip.findUnique({
+        where: { id: data.tripId },
+        select: { driverId: true, ownerId: true }
+      });
+
+      if (trip?.driverId) {
+        // Force cancellation on driver screen
+        this.server.to(`user:${trip.driverId}`).emit('ride:cancelled', { 
+          tripId: data.tripId,
+          message: 'The owner has cancelled this ride request.' 
+        });
+        this.logger.debug(`[WS] Broadcast ride:cancelled to driver ${trip.driverId} for trip ${data.tripId}`);
+      }
+    } catch (e) {
+      this.logger.error(`Failed to handle ride:cancel: ${e.message}`);
+    }
+  }
+
   @SubscribeMessage('trackdriver')
   handleTrackDriver(
     @MessageBody() data: { driverId: string },
