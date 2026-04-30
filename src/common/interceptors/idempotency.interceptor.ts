@@ -6,8 +6,8 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import { Observable, of, throwError } from 'rxjs';
-import { tap, catchError } from 'rxjs/operators';
+import { Observable, from, of, throwError } from 'rxjs';
+import { tap, catchError, switchMap } from 'rxjs/operators';
 import { RedisService } from '../../redis/redis.service';
 
 interface IdempotencyRecord {
@@ -81,15 +81,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
             this.logger.error(`[Redis] Failed to cache successful response: ${e.message}`);
           }
         }),
-        catchError(async (error) => {
-          try {
-            // On error, delete the key to allow retry
-            await this.redis.del(cacheKey);
-          } catch (e) {
-            this.logger.error(`[Redis] Failed to clear lock on error: ${e.message}`);
-          }
-          return throwError(() => error);
-        }),
+        catchError((error) =>
+          from(
+            this.redis.del(cacheKey).catch((e) => {
+              this.logger.error(`[Redis] Failed to clear lock on error: ${e.message}`);
+            }),
+          ).pipe(switchMap(() => throwError(() => error))),
+        ),
       );
     } catch (e) {
       if (e instanceof ConflictException) throw e;
