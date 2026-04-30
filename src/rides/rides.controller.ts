@@ -44,8 +44,7 @@ export class RidesController {
       const file = await req.file();
       if (!file) throw new BadRequestException('Image file is required');
       const buffer = await file.toBuffer();
-      const base64 = `data:${file.mimetype};base64,${buffer.toString('base64')}`;
-      const url = await this.cloudinaryService.uploadImage(base64, `bica/${folder}`);
+      const url = await this.cloudinaryService.uploadBuffer(buffer, `bica/${folder}`);
       return { url };
     }
     

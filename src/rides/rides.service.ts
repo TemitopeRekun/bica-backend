@@ -292,36 +292,39 @@ export class RidesService {
   }
 
   async acceptRide(tripId: string, driverId: string, acceptanceImageUrl: string) {
-    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
-    if (!trip) throw new NotFoundException('Trip not found');
-    if (trip.status !== TripStatus.PENDING_ACCEPTANCE) throw new BadRequestException('Trip no longer available');
+    try {
+      const updated = await this.prisma.trip.update({
+        where: { 
+          id: tripId,
+          status: TripStatus.PENDING_ACCEPTANCE // 🛡️ Atomic check: prevents two drivers from accepting
+        },
+        data: { 
+          status: TripStatus.ASSIGNED, 
+          driverId,
+          otp,
+          acceptanceImageUrl,
+          otpAttempts: 0
+        },
+        include: {
+          owner: { select: { id: true, name: true, phone: true } },
+          driver: { select: { id: true, name: true, rating: true, avatarUrl: true } },
+        },
+      });
 
-    // Generate 4-digit OTP
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+      this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
+      this.fcmService.sendToUser(updated.ownerId, {
+        title: 'Driver Found!',
+        body: `${updated.driver?.name ?? 'A driver'} has accepted your ride. Verification Code: ${otp}`,
+        data: { tripId, type: 'ride_accepted', otp },
+      }).catch(e => this.logger.error(`FCM Accept Error: ${e.message}`));
 
-    const updated = await this.prisma.trip.update({
-      where: { id: tripId },
-      data: { 
-        status: TripStatus.ASSIGNED, 
-        driverId,
-        otp,
-        acceptanceImageUrl,
-        otpAttempts: 0
-      },
-      include: {
-        owner: { select: { id: true, name: true, phone: true } },
-        driver: { select: { id: true, name: true, rating: true, avatarUrl: true } },
-      },
-    });
-
-    this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
-    this.fcmService.sendToUser(updated.ownerId, {
-      title: 'Driver Found!',
-      body: `${updated.driver?.name ?? 'A driver'} has accepted your ride. Verification Code: ${otp}`,
-      data: { tripId, type: 'ride_accepted', otp },
-    }).catch(e => this.logger.error(`FCM Accept Error: ${e.message}`));
-
-    return updated;
+      return updated;
+    } catch (error) {
+      if (error.code === 'P2025') { // Prisma RecordNotFound (caused by the status check failing)
+        throw new BadRequestException('Trip is no longer available or has already been accepted.');
+      }
+      throw error;
+    }
   }
 
   async regenerateOtp(tripId: string, driverId: string) {
