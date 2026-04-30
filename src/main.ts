@@ -34,12 +34,12 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
-import { Logger } from 'nestjs-pino';
+import { Logger as PinoLogger } from 'nestjs-pino';
 
 async function bootstrap() {
   const adapter = new FastifyAdapter({ 
@@ -54,7 +54,7 @@ async function bootstrap() {
     { bufferLogs: true, rawBody: true },
   );
 
-  app.useLogger(app.get(Logger));
+  app.useLogger(app.get(PinoLogger));
 
   await app.register(helmet, {
     contentSecurityPolicy: {
@@ -88,6 +88,9 @@ async function bootstrap() {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  const logger = new Logger('Bootstrap');
+  logger.log(`🛡️ CORS Origins Allowed: ${corsOrigins.join(', ')}`);
+
   app.enableCors({
     origin: corsOrigins.includes('*') ? true : corsOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -95,8 +98,10 @@ async function bootstrap() {
       'Content-Type', 
       'Authorization', 
       'X-Idempotency-Key',
+      'x-idempotency-key',
       'X-Requested-With',
       'Accept',
+      'Origin',
     ],
     credentials: true,
   });
