@@ -42,12 +42,12 @@ import { AppModule } from './app.module';
 import { Logger as PinoLogger } from 'nestjs-pino';
 
 async function bootstrap() {
-  const adapter = new FastifyAdapter({ 
-    logger: false, 
+  const adapter = new FastifyAdapter({
+    logger: false,
     bodyLimit: 10 * 1024 * 1024,
-    trustProxy: true 
+    trustProxy: true
   });
-  
+
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     adapter,
@@ -55,29 +55,6 @@ async function bootstrap() {
   );
 
   app.useLogger(app.get(PinoLogger));
-
-  await app.register(helmet, {
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: [`'self'`],
-        styleSrc: [`'self'`, `'unsafe-inline'`],
-        imgSrc: [`'self'`, 'data:', 'validator.swagger.io'],
-        scriptSrc: [`'self'`, `https: 'unsafe-inline'`],
-      },
-    },
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true,
-    },
-  });
-
-  await app.register(multipart, {
-    limits: {
-      fileSize: 5 * 1024 * 1024,
-      files: 1,
-    },
-  });
 
   const config = app.get(ConfigService);
   const corsOrigins = (
@@ -92,13 +69,24 @@ async function bootstrap() {
   logger.log(`🛡️ CORS Origins Allowed: ${corsOrigins.join(', ')}`);
 
   app.enableCors({
-    origin: corsOrigins,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+
+      if (corsOrigins.indexOf(origin) !== -1 || origin.includes('localhost') || origin.includes('netlify.app')) {
+        callback(null, true);
+      } else {
+        logger.warn(`🚫 CORS Blocked for origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'), false);
+      }
+    },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'PUT'],
     allowedHeaders: [
-      'Content-Type', 
-      'Authorization', 
+      'Content-Type',
+      'Authorization',
       'X-Idempotency-Key',
       'x-idempotency-key',
+      'idempotency-key',
       'X-Requested-With',
       'Accept',
       'Origin',
@@ -106,6 +94,30 @@ async function bootstrap() {
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204,
+  });
+
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: [`'self'`],
+        styleSrc: [`'self'`, `'unsafe-inline'`],
+        imgSrc: [`'self'`, 'data:', 'validator.swagger.io', 'res.cloudinary.com'],
+        scriptSrc: [`'self'`, `https: 'unsafe-inline'`],
+      },
+    },
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  });
+
+  await app.register(multipart, {
+    limits: {
+      fileSize: 5 * 1024 * 1024,
+      files: 1,
+    },
   });
 
   app.useGlobalPipes(
