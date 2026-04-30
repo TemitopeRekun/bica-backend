@@ -24,6 +24,7 @@ import { TripStatus, UserRole } from '@prisma/client';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import type { FastifyRequest } from 'fastify';
 import { Req } from '@nestjs/common';
+import { Public } from '../common/decorators/public.decorator';
 
 @UseGuards(AuthGuard, RolesGuard)
 @UseInterceptors(IdempotencyInterceptor)
@@ -34,9 +35,9 @@ export class RidesController {
     private cloudinaryService: CloudinaryService
   ) { }
 
+  @Public()
   @Post('upload-photo')
   async uploadPhoto(
-    @CurrentUser() user: any,
     @Req() req: FastifyRequest,
     @Body('image') image?: string,
     @Body('folder') folder: string = 'rides',
