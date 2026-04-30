@@ -283,7 +283,7 @@ export class UsersService {
         tripsAsDriver: {
           where: {
             status: {
-              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'],
+              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS', 'ARRIVED', 'SCHEDULED'],
             },
           },
           select: { id: true },
@@ -291,17 +291,21 @@ export class UsersService {
       },
     });
 
+    const searchTransmission = transmission?.toUpperCase();
+
     const available = drivers.filter(d => 
       d.approvalStatus === 'APPROVED' &&
       !d.isBlocked &&
       d.locationLat !== null &&
       d.locationLng !== null &&
       d.tripsAsDriver.length === 0 &&
-      (transmission === 'Manual'
-        ? (d.transmission === 'MANUAL' || d.transmission === 'BOTH')
-        : transmission === 'Automatic'
-          ? (d.transmission === 'AUTOMATIC' || d.transmission === 'BOTH' || d.transmission === null)
-          : true)
+      (!searchTransmission
+        ? true
+        : searchTransmission === 'MANUAL'
+          ? (d.transmission === 'MANUAL' || d.transmission === 'BOTH')
+          : searchTransmission === 'AUTOMATIC'
+            ? (d.transmission === 'AUTOMATIC' || d.transmission === 'BOTH' || d.transmission === null)
+            : true)
     );
 
     if (pickupLat !== undefined && pickupLng !== undefined) {
@@ -390,7 +394,7 @@ export class UsersService {
         monnifySubAccountCode: true,
         tripsAsDriver: {
           where: {
-            status: { in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS'] },
+            status: { in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS', 'ARRIVED', 'SCHEDULED'] },
           },
           select: { id: true, status: true },
         },
