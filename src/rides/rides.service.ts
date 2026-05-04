@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { RateTripDto } from './dto/rate-trip.dto';
 import { PaymentStatus, TripStatus, UserRole } from '@prisma/client';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { RidesGateway } from './rides.gateway';
@@ -536,6 +537,99 @@ export class RidesService {
     this.gateway.notifyTripStatusChanged(tripId, dto.status, tripUpdate);
     this.notifyStatusChangeViaPush(tripUpdate, dto.status);
     return tripUpdate;
+  }
+
+  // ─── RATING ENGINE ───────────────────────────────────────────────
+
+  async getPendingRating(ownerId: string) {
+    const trip = await this.prisma.trip.findFirst({
+      where: {
+        ownerId,
+        status: TripStatus.COMPLETED,
+        paymentStatus: PaymentStatus.PAID,
+        rating: null,
+      },
+      orderBy: [
+        { paidAt: 'desc' },
+        { completedAt: 'desc' },
+      ],
+      include: {
+        driver: {
+          select: {
+            id: true,
+            name: true,
+            avatarUrl: true,
+            rating: true,
+            totalTrips: true,
+          }
+        }
+      }
+    });
+
+    if (!trip) return null;
+
+    return {
+      tripId: trip.id,
+      driver: trip.driver,
+      pickupAddress: trip.pickupAddress,
+      destAddress: trip.destAddress,
+      completedAt: trip.completedAt,
+      paidAt: trip.paidAt,
+    };
+  }
+
+  async rateTrip(tripId: string, ownerId: string, dto: RateTripDto) {
+    // 1. Validation Order
+    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException('Trip not found');
+    if (trip.ownerId !== ownerId) throw new ForbiddenException('Access denied');
+    if (!trip.driverId) throw new BadRequestException('No driver assigned to this trip');
+    if (trip.status !== TripStatus.COMPLETED) throw new BadRequestException('Trip must be completed before rating');
+    if (trip.paymentStatus !== PaymentStatus.PAID) throw new BadRequestException('Trip payment must be confirmed before rating');
+
+    return await this.prisma.$transaction(async (tx) => {
+      // 2. Concurrency Check
+      const existing = await tx.rating.findUnique({ where: { tripId } });
+      if (existing) throw new BadRequestException('Trip already rated'); // Or ConflictException
+
+      // 3. Driver aggregates calculation
+      const driver = await tx.user.findUnique({ where: { id: trip.driverId! } });
+      if (!driver) throw new NotFoundException('Driver not found');
+
+      const currentCount = driver.ratingCount ?? 0;
+      const currentAverage = driver.rating ?? 5.0;
+      const nextCount = currentCount + 1;
+      
+      const nextAverage = ((currentAverage * currentCount) + dto.score) / nextCount;
+
+      // 4. Record Rating
+      await tx.rating.create({
+        data: {
+          tripId: trip.id,
+          driverId: trip.driverId!,
+          ownerId,
+          score: dto.score,
+        },
+      });
+
+      // 5. Update Driver
+      const updatedDriver = await tx.user.update({
+        where: { id: trip.driverId! },
+        data: {
+          rating: nextAverage,
+          ratingCount: nextCount,
+        },
+      });
+
+      return {
+        message: 'Rating submitted successfully',
+        tripId: trip.id,
+        driverId: updatedDriver.id,
+        score: dto.score,
+        driverRating: updatedDriver.rating,
+        driverRatingCount: updatedDriver.ratingCount,
+      };
+    });
   }
 
   private validateStatusTransition(trip: any, userId: string, role: UserRole, newStatus: TripStatus) {

@@ -13,6 +13,7 @@ import {
 import { RidesService } from "./rides.service";
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { RateTripDto } from './dto/rate-trip.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -64,6 +65,16 @@ export class RidesController {
     @Body() dto: CreateRideDto,
   ) {
     return this.ridesService.createRide(user.sub, dto);
+  }
+
+  // Owner gets pending rating if any
+  // GET /rides/pending-rating
+  @Roles(UserRole.OWNER)
+  @Get('pending-rating')
+  getPendingRating(
+    @CurrentUser() user: any,
+  ) {
+    return this.ridesService.getPendingRating(user.sub);
   }
 
   // Any authenticated user gets their trip history
@@ -139,6 +150,18 @@ export class RidesController {
     @CurrentUser() user: any,
   ) {
     return this.ridesService.cancelRide(id, user.sub, user.role);
+  }
+
+  // Owner rates a completed trip
+  // POST /rides/:id/rate
+  @Roles(UserRole.OWNER)
+  @Post(':id/rate')
+  rateTrip(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() dto: RateTripDto,
+  ) {
+    return this.ridesService.rateTrip(id, user.sub, dto);
   }
 
   // Generate new OTP after failed attempts

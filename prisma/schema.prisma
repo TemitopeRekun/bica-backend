@@ -58,6 +58,7 @@ model User {
   passwordHash     String
   role             UserRole
   rating           Float           @default(5.0)
+  ratingCount      Int             @default(0)
   totalTrips       Int             @default(0)
   avatarUrl        String?
   walletBalance    Float           @default(0)
@@ -83,6 +84,8 @@ model User {
   updatedAt        DateTime        @updatedAt
   tripsAsOwner     Trip[]          @relation("OwnerTrips")
   tripsAsDriver    Trip[]          @relation("DriverTrips")
+  ratingsGiven     Rating[]        @relation("OwnerRatings")
+  ratingsReceived  Rating[]        @relation("DriverRatings")
   bankName              String?
   bankCode              String?
   accountNumber         String?
@@ -135,6 +138,7 @@ model Trip {
   ownerId          String
   driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
   driverId         String?
+  rating           Rating?
   otp              String?
   acceptanceImageUrl String?
   carFrontUrl      String?
@@ -164,6 +168,21 @@ model Payout {
   driverId      String
   trip          Trip?        @relation(fields: [tripId], references: [id])
   tripId        String?      @unique
+}
+
+model Rating {
+  id         String   @id @default(uuid())
+  tripId     String   @unique
+  trip       Trip     @relation(fields: [tripId], references: [id])
+  driverId   String
+  driver     User     @relation("DriverRatings", fields: [driverId], references: [id])
+  ownerId    String
+  owner      User     @relation("OwnerRatings", fields: [ownerId], references: [id])
+  score      Int
+  createdAt  DateTime @default(now())
+
+  @@index([driverId])
+  @@index([ownerId])
 }
 
 model SystemSettings {
