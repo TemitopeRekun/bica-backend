@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { PaymentStatus, UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
@@ -201,8 +202,8 @@ export class PaymentsService {
         if ((error.monnifyStatus ?? 0) >= 500) {
           await this.logValidatedBankAccount(driver);
 
-          throw new BadGatewayException(
-            'Monnify could not provision the driver payout account right now. Please retry later or use a different bank account.',
+          throw new UnprocessableEntityException(
+            'Driver payment setup incomplete. Admin notified.',
           );
         }
 
@@ -377,6 +378,7 @@ export class PaymentsService {
       paidAt: null,
       transactionReference,
       message: 'Payment initiated. Awaiting checkout completion.',
+      postTripAction: 'VERIFYING_PAYMENT',
     });
 
     return response;
@@ -519,6 +521,7 @@ export class PaymentsService {
           paidAt: null,
           transactionReference: txRef,
           message: 'Payment could not be verified. Please try again.',
+          postTripAction: 'REQUIRE_PAYMENT',
         });
       }
       return;
@@ -613,6 +616,7 @@ export class PaymentsService {
       paidAt: paidAt.toISOString(),
       transactionReference: txRef,
       message: 'Payment confirmed.',
+      postTripAction: 'REQUIRE_RATING', // Owner must rate after payment
     });
 
     if (trip.driverId) {
@@ -622,6 +626,7 @@ export class PaymentsService {
         paidAt: paidAt.toISOString(),
         amount: amountPaid,
         message: 'Payment received successfully.',
+        postTripAction: 'CLEARED', // Driver is cleared to go home
       });
 
       this.fcmService.sendToUser(trip.driverId, {

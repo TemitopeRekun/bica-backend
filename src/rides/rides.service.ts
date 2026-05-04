@@ -256,24 +256,40 @@ export class RidesService {
               TripStatus.SCHEDULED,
               TripStatus.ASSIGNED, 
               TripStatus.ARRIVED, 
-              TripStatus.IN_PROGRESS
+              TripStatus.IN_PROGRESS,
+              TripStatus.COMPLETED
             ] 
           },
         },
         include: {
           owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
           driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+          rating: { select: { id: true } },
         },
         orderBy: { updatedAt: 'desc' },
       });
 
       if (trip) {
-        this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] for ${role} ${userId}`);
+        let postTripAction = 'CLEARED';
+        if (trip.status === TripStatus.COMPLETED) {
+          if (trip.paymentStatus !== PaymentStatus.PAID) {
+            postTripAction = role === UserRole.DRIVER ? 'AWAITING_PAYMENT' : 'REQUIRE_PAYMENT';
+          } else if (role === UserRole.OWNER && !trip.rating) {
+            postTripAction = 'REQUIRE_RATING';
+          }
+        }
+
+        if (trip.status === TripStatus.COMPLETED && postTripAction === 'CLEARED') {
+          this.logger.debug(`🔍 [REFRESH] Most recent trip ${trip.id} is already completely settled. Returning null.`);
+          return null;
+        }
+
+        this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] [Action: ${postTripAction}] for ${role} ${userId}`);
+        return { ...trip, postTripAction };
       } else {
         this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+        return null;
       }
-
-      return trip;
     } catch (error) {
       this.logger.error(`❌ [REFRESH_ERROR] Failed to query current ride for ${role} ${userId}: ${error.message}`);
       // Safety: Return null instead of 500 Internal Server Error to avoid breaking the frontend UI.
@@ -547,7 +563,7 @@ export class RidesService {
         ownerId,
         status: TripStatus.COMPLETED,
         paymentStatus: PaymentStatus.PAID,
-        rating: null,
+        rating: { is: null },
       },
       orderBy: [
         { paidAt: 'desc' },
