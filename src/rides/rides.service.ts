@@ -16,6 +16,7 @@ import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { FcmService } from '../notifications/fcm.service';
+import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class RidesService {
@@ -27,6 +28,7 @@ export class RidesService {
     private adminRealtimeGateway: AdminRealtimeGateway,
     @InjectQueue('rides-queue') private rideQueue: Queue,
     private fcmService: FcmService,
+    private redis: RedisService,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -354,6 +356,18 @@ export class RidesService {
     if (!trip) throw new NotFoundException('Trip not found');
     if (trip.driverId !== driverId) throw new ForbiddenException('Not your trip');
     if (trip.status !== TripStatus.ARRIVED) throw new BadRequestException('Can only regenerate PIN when arrived');
+    
+    // 🛡️ Rate limit: 1 regeneration per 60 seconds per trip
+    const rateLimitKey = `otp-regen:${tripId}`;
+    try {
+      const acquired = await this.redis.setIfNotExists(rateLimitKey, '1', 60);
+      if (!acquired) {
+        throw new BadRequestException('Please wait 60 seconds before requesting another PIN.');
+      }
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      this.logger.warn(`Redis unavailable for OTP rate limit — proceeding without rate limit: ${e.message}`);
+    }
 
     const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
     const updated = await this.prisma.trip.update({
@@ -464,6 +478,13 @@ export class RidesService {
       // 🛡️ PIN Verification Logic
       if (!dto.otp) {
         throw new BadRequestException('Verification code (OTP) is required to start the trip');
+      }
+
+      // [ADD] Hard lockout check BEFORE OTP comparison
+      if ((trip.otpAttempts ?? 0) >= 5) {
+        throw new BadRequestException(
+          'Maximum PIN attempts reached. Please request a new PIN from the owner.'
+        );
       }
 
       if (trip.otp !== dto.otp) {
