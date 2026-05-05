@@ -15,6 +15,7 @@ import { RidesGateway } from '../rides/rides.gateway';
 import { MonnifyApiException, MonnifyService } from './monnify.service';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { FcmService } from '../notifications/fcm.service';
+import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
 
 type DriverPayoutProfile = {
   id: string;
@@ -792,6 +793,117 @@ export class PaymentsService {
         limit: pagination.limit,
         totalPages: Math.ceil(total / pagination.limit!),
       },
+    };
+  }
+
+  async getPaymentsSummary(userId: string, role: string, dto: GetPaymentsSummaryDto) {
+    if (role !== 'ADMIN' && role !== 'DRIVER') {
+      throw new BadRequestException('Invalid role for payments summary');
+    }
+
+    const period = dto.period || 'daily';
+    // PostgreSQL DATE_TRUNC fields
+    const pgPeriod = period === 'daily' ? 'day' : period === 'weekly' ? 'week' : 'month';
+    const timezone = dto.timezone || 'UTC';
+
+    const queryParams: any[] = [];
+    let queryStr = `
+      SELECT 
+        DATE_TRUNC('${pgPeriod}', p."paidAt" AT TIME ZONE '${timezone}') as bucket,
+        COUNT(p.id)::int as "clearedTrips",
+        SUM(p."totalAmount")::float as "grossThroughput",
+        SUM(p."platformAmount")::float as "platformRevenue",
+        SUM(p."driverAmount")::float as "driverPayouts"
+      FROM "PaymentRecord" p
+    `;
+
+    if (role === 'DRIVER') {
+      queryStr += ` INNER JOIN "Trip" t ON p."tripId" = t.id `;
+      queryParams.push(userId);
+      queryStr += ` WHERE t."driverId" = $${queryParams.length} `;
+    } else {
+      queryStr += ` WHERE 1=1 `;
+    }
+
+    if (dto.from) {
+      queryParams.push(new Date(dto.from));
+      queryStr += ` AND p."paidAt" >= $${queryParams.length} `;
+    }
+
+    if (dto.to) {
+      queryParams.push(new Date(dto.to));
+      queryStr += ` AND p."paidAt" <= $${queryParams.length} `;
+    }
+
+    queryStr += ` GROUP BY bucket ORDER BY bucket ASC `;
+
+    const rawBuckets = await this.prisma.$queryRawUnsafe<any[]>(queryStr, ...queryParams);
+
+    let totals = {
+      clearedTrips: 0,
+      grossThroughput: role === 'ADMIN' ? 0 : undefined,
+      platformRevenue: role === 'ADMIN' ? 0 : undefined,
+      driverPayouts: role === 'ADMIN' ? 0 : undefined,
+      driverEarnings: role === 'DRIVER' ? 0 : undefined,
+    };
+
+    const buckets = rawBuckets.map((row) => {
+      const bDate = new Date(row.bucket);
+      // Format bucket key
+      let key = '';
+      if (period === 'daily') {
+        key = bDate.toISOString().split('T')[0];
+      } else if (period === 'weekly') {
+        // Simple ISO week key approx (can be refined)
+        const d = new Date(Date.UTC(bDate.getFullYear(), bDate.getMonth(), bDate.getDate()));
+        const dayNum = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+        const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1)/7);
+        key = `${d.getUTCFullYear()}-W${weekNo.toString().padStart(2, '0')}`;
+      } else {
+        key = `${bDate.getFullYear()}-${(bDate.getMonth() + 1).toString().padStart(2, '0')}`;
+      }
+
+      const clearedTrips = Number(row.clearedTrips || 0);
+      const grossThroughput = Number(row.grossThroughput || 0);
+      const platformRevenue = Number(row.platformRevenue || 0);
+      const driverPayouts = Number(row.driverPayouts || 0);
+
+      totals.clearedTrips += clearedTrips;
+      if (role === 'ADMIN') {
+        totals.grossThroughput! += grossThroughput;
+        totals.platformRevenue! += platformRevenue;
+        totals.driverPayouts! += driverPayouts;
+      } else {
+        totals.driverEarnings! += driverPayouts; // for driver, their payout is their earnings
+      }
+
+      const bucketRes: any = {
+        key,
+        label: key, // Can be improved on frontend
+        clearedTrips,
+      };
+
+      if (role === 'ADMIN') {
+        bucketRes.grossThroughput = grossThroughput;
+        bucketRes.platformRevenue = platformRevenue;
+        bucketRes.driverPayouts = driverPayouts;
+      } else {
+        bucketRes.driverEarnings = driverPayouts;
+      }
+
+      return bucketRes;
+    });
+
+    return {
+      role,
+      period,
+      rangeStart: dto.from || (buckets.length > 0 ? buckets[0].key : null),
+      rangeEnd: dto.to || (buckets.length > 0 ? buckets[buckets.length - 1].key : null),
+      timezone,
+      totals,
+      buckets,
     };
   }
 }

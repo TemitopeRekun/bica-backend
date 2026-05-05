@@ -19,6 +19,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
 
@@ -95,6 +96,15 @@ export class PaymentsController {
     @Query() pagination: PaginationDto,
   ) {
     return this.paymentsService.getPaymentHistory(user.sub, user.role, pagination);
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('summary')
+  getSummary(
+    @CurrentUser() user: any,
+    @Query() dto: GetPaymentsSummaryDto,
+  ) {
+    return this.paymentsService.getPaymentsSummary(user.sub, user.role, dto);
   }
 
   @UseGuards(AuthGuard, RolesGuard)
