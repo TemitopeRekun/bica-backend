@@ -50,6 +50,14 @@ enum DisbursementStatus {
   FAILED
 }
 
+enum SupportCategory {
+  PAYMENT_ISSUE
+  TRIP_PROBLEM
+  DRIVER_OWNER_COMPLAINT
+  TECHNICAL_ISSUE
+  OTHER
+}
+
 model User {
   id               String          @id @default(uuid())
   name             String
@@ -96,6 +104,7 @@ model User {
   fcmToken              String?
   deviceType            String? // e.g., 'ios', 'android'
   auditLogs             AuditLog[]
+  supportTickets        SupportTicket[]
 
   @@index([role, isOnline, approvalStatus])
 }
@@ -149,6 +158,7 @@ model Trip {
   payout           Payout?
   paymentRecord   PaymentRecord?
   tripAuditLogs   TripAuditLog[]
+  supportTickets  SupportTicket[]
 
   @@index([status, createdAt])
   @@index([ownerId])
@@ -259,4 +269,25 @@ model TripAuditLog {
   createdAt DateTime @default(now())
 
   @@index([tripId])
+}
+
+model SupportTicket {
+  id                   String          @id @default(uuid())
+  userId               String
+  userName             String
+  userRole             UserRole
+  category             SupportCategory
+  tripId               String?
+  paymentStatus        String?
+  firstMessage         String          @db.Text
+  recentFailureContext String?         @db.Text
+  openedAt             DateTime
+  createdAt            DateTime        @default(now())
+
+  user  User  @relation(fields: [userId], references: [id])
+  trip  Trip? @relation(fields: [tripId], references: [id])
+
+  @@index([userId])
+  @@index([category])
+  @@index([createdAt])
 }
