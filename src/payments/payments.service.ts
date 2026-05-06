@@ -17,6 +17,10 @@ import { MonnifyApiException, MonnifyService } from './monnify.service';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { FcmService } from '../notifications/fcm.service';
 import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
+ 
+// Monnify returns different status strings in webhook vs. direct verify.
+// This single source of truth covers all variants.
+const MONNIFY_SUCCESS_STATUSES = ['PAID', 'OVERPAID', 'SUCCESS', 'SUCCESSFUL'];
 
 type DriverPayoutProfile = {
   id: string;
@@ -427,7 +431,7 @@ export class PaymentsService {
     if (trip.paymentStatus === 'PENDING' && referenceToCheck) {
       try {
         const verification = await this.monnify.verifyTransaction(referenceToCheck);
-        const isActuallyPaid = ['PAID', 'OVERPAID', 'SUCCESS', 'SUCCESSFUL'].includes(verification.status.toUpperCase());
+        const isActuallyPaid = MONNIFY_SUCCESS_STATUSES.includes(verification.status?.toUpperCase());
         
         if (isActuallyPaid) {
           this.logger.log(`🛡️ [PROACTIVE_SYNC] Trip ${trip.id} verified as ${verification.status} using ref ${referenceToCheck}.`);
@@ -503,7 +507,7 @@ export class PaymentsService {
     }
 
     const verification = await this.monnify.verifyTransaction(txRef);
-    if (!['PAID', 'OVERPAID'].includes(verification.status)) {
+    if (!MONNIFY_SUCCESS_STATUSES.includes(verification.status?.toUpperCase())) {
       this.logger.warn(`Payment verification failed for trip ${trip.id}. Status: ${verification.status}`);
       
       if (verification.status === 'EXPIRED' || verification.status === 'FAILED') {
