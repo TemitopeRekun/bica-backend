@@ -10,7 +10,7 @@ import {
   Req,
   UseGuards,
   UseInterceptors,
-  ForbiddenException,
+  BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
@@ -25,7 +25,6 @@ import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
 
-@UseInterceptors(IdempotencyInterceptor)
 @Controller('payments')
 export class PaymentsController {
   private readonly logger = new Logger(PaymentsController.name);
@@ -43,18 +42,10 @@ export class PaymentsController {
     @Headers('monnify-signature') signature: string,
     @Body() payload: any,
   ) {
-    const clientIp = req.ip;
-    const allowedIp = '35.242.133.146';
-
-    // 🛡️ Strict IP Check in Production
-    if (process.env.NODE_ENV === 'production' && clientIp !== allowedIp) {
-      this.logger.warn(`Rejected Monnify webhook from unauthorized IP: ${clientIp}`);
-      throw new ForbiddenException('Unauthorized source IP');
+    if (!req.rawBody) {
+      throw new BadRequestException('Raw body unavailable — cannot verify webhook signature');
     }
-
-    this.logger.log(`Processing Monnify webhook from IP: ${clientIp}`);
-
-    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+    const rawBody = req.rawBody.toString('utf8');
 
     // This will throw 401 for signature mismatch or 500 for server errors,
     // which correctly tells Monnify to retry if it's a transient failure.
@@ -65,6 +56,7 @@ export class PaymentsController {
 
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.OWNER)
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('initiate/:tripId')
   initiatePayment(
     @Param('tripId') tripId: string,
@@ -74,6 +66,7 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
   @Get('status/:tripId')
   getPaymentStatus(
     @Param('tripId') tripId: string,
@@ -85,6 +78,7 @@ export class PaymentsController {
 
   @UseGuards(AuthGuard, RolesGuard, ApprovedDriverGuard)
   @Roles(UserRole.DRIVER)
+  @UseInterceptors(IdempotencyInterceptor)
   @Get('wallet')
   getWallet(@CurrentUser() user: any) {
     return this.paymentsService.getWalletSummary(user.sub);
@@ -105,6 +99,7 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
   @Get('history')
   getHistory(
     @CurrentUser() user: any,
