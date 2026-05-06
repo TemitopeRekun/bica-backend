@@ -52,6 +52,16 @@ export class PaymentsController {
       return { responseCode: '00', responseMessage: 'Success' };
     }
 
+    // Monnify's documented static IP — enforce in production only
+    const MONNIFY_WEBHOOK_IP = '35.242.133.146';
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      ?? req.ip;
+
+    if (process.env.NODE_ENV === 'production' && clientIp !== MONNIFY_WEBHOOK_IP) {
+      this.logger.warn(`Webhook rejected: unexpected IP ${clientIp}`);
+      return { responseCode: '00', responseMessage: 'Success' }; // 200, not 401 — never reject with error codes
+    }
+
     const rawBody = req.rawBody.toString('utf8');
 
     // This will throw 401 for signature mismatch or 500 for server errors,

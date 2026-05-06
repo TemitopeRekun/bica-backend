@@ -476,7 +476,8 @@ export class PaymentsService {
   ): Promise<void> {
     const isValid = this.monnify.verifyWebhookSignature(rawBody, signature);
     if (!isValid) {
-      throw new UnauthorizedException('Invalid Monnify webhook signature');
+      this.logger.warn('Rejected Monnify webhook with invalid signature');
+      return;
     }
 
     if (payload.eventType !== 'SUCCESSFUL_TRANSACTION') {
