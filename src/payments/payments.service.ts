@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   UnprocessableEntityException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { PaymentStatus, UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
@@ -471,8 +472,7 @@ export class PaymentsService {
   ): Promise<void> {
     const isValid = this.monnify.verifyWebhookSignature(rawBody, signature);
     if (!isValid) {
-      this.logger.warn('Rejected webhook with invalid signature');
-      return;
+      throw new UnauthorizedException('Invalid Monnify webhook signature');
     }
 
     if (payload.eventType !== 'SUCCESSFUL_TRANSACTION') {

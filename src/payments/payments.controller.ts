@@ -10,6 +10,8 @@ import {
   Req,
   UseGuards,
   UseInterceptors,
+  ForbiddenException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -42,15 +44,21 @@ export class PaymentsController {
     @Body() payload: any,
   ) {
     const clientIp = req.ip;
-    this.logger.log(`Incoming Monnify webhook from IP: ${clientIp}`);
+    const allowedIp = '35.242.133.146';
 
-    try {
-      const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
-      await this.paymentsService.processWebhook(rawBody, signature, payload);
-    } catch (error) {
-      this.logger.error(`Monnify webhook processing failed: ${error.message}`);
-      // We still return 200 to acknowledge receipt as per Monnify docs
+    // 🛡️ Strict IP Check in Production
+    if (process.env.NODE_ENV === 'production' && clientIp !== allowedIp) {
+      this.logger.warn(`Rejected Monnify webhook from unauthorized IP: ${clientIp}`);
+      throw new ForbiddenException('Unauthorized source IP');
     }
+
+    this.logger.log(`Processing Monnify webhook from IP: ${clientIp}`);
+
+    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+
+    // This will throw 401 for signature mismatch or 500 for server errors,
+    // which correctly tells Monnify to retry if it's a transient failure.
+    await this.paymentsService.processWebhook(rawBody, signature, payload);
 
     return { status: 'received' };
   }
