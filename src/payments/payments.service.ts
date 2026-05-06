@@ -556,6 +556,9 @@ export class PaymentsService {
   private async finalizePayment(trip: any, amountPaid: number, paymentMethod: string, rawPayload: any) {
     const paidAt = new Date();
     const txRef = trip.monnifyTxRef;
+    const totalAmount = parseFloat(String(amountPaid));
+    const driverAmount = parseFloat(String(trip.driverEarnings));
+    const platformAmount = parseFloat(String(trip.commissionAmount));
 
     await this.prisma.$transaction(async (tx) => {
       // 1. Lock the trip row to serialize concurrent webhook/proactive-check calls
@@ -583,9 +586,9 @@ export class PaymentsService {
         where: { monnifyTxRef: txRef },
         create: {
           tripId: trip.id,
-          totalAmount: amountPaid,
-          driverAmount: trip.driverEarnings,
-          platformAmount: trip.commissionAmount,
+          totalAmount,
+          driverAmount,
+          platformAmount,
           monnifyTxRef: txRef,
           paymentMethod: paymentMethod,
           paidAt,
