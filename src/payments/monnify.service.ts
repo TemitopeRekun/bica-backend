@@ -270,10 +270,12 @@ export class MonnifyService {
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const secretKey = this.config.get<string>('MONNIFY_SECRET_KEY');
     const computed = sha512.hmac(secretKey!, rawBody);
-    const isValid = computed === signature;
+    
+    // Use case-insensitive comparison for hex strings
+    const isValid = computed.toLowerCase() === (signature || '').toLowerCase();
 
     if (!isValid) {
-      this.logger.warn('Invalid Monnify webhook signature detected');
+      this.logger.warn(`Invalid Monnify webhook signature detected. Computed: ${computed.slice(0, 8)}..., Received: ${(signature || '').slice(0, 8)}...`);
     }
 
     return isValid;

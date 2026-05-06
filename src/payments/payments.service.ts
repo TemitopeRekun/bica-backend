@@ -389,6 +389,7 @@ export class PaymentsService {
     tripId: string,
     requestingUserId: string,
     role: UserRole,
+    manualReference?: string,
   ) {
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
@@ -419,15 +420,17 @@ export class PaymentsService {
     }
 
     // 🛡️ Proactive Self-Healing Verification
-    // If the local DB says PENDING but we have a transaction reference, 
-    // we reach out to Monnify to see if the webhook is just lagging.
-    if (trip.paymentStatus === 'PENDING' && trip.monnifyTxRef) {
+    // Use manualReference if provided, otherwise fallback to trip's stored reference
+    const referenceToCheck = manualReference || trip.monnifyTxRef;
+
+    if (trip.paymentStatus === 'PENDING' && referenceToCheck) {
       try {
-        const verification = await this.monnify.verifyTransaction(trip.monnifyTxRef);
+        const verification = await this.monnify.verifyTransaction(referenceToCheck);
+        const isActuallyPaid = ['PAID', 'OVERPAID', 'SUCCESS', 'SUCCESSFUL'].includes(verification.status.toUpperCase());
         
-        if (['PAID', 'OVERPAID'].includes(verification.status)) {
-          this.logger.log(`🛡️ [PROACTIVE_SYNC] Trip ${trip.id} verified as ${verification.status} during status check.`);
-          await this.finalizePayment(trip, verification.amountPaid, verification.paymentMethod, { source: 'proactive_check' });
+        if (isActuallyPaid) {
+          this.logger.log(`🛡️ [PROACTIVE_SYNC] Trip ${trip.id} verified as ${verification.status} using ref ${referenceToCheck}.`);
+          await this.finalizePayment(trip, verification.amountPaid, verification.paymentMethod, { source: 'proactive_check', manual: !!manualReference });
           
           // Refresh trip data for the response
           trip.paymentStatus = PaymentStatus.PAID;
