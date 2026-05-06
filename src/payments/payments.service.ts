@@ -466,6 +466,16 @@ export class PaymentsService {
       paymentRecordId: trip.paymentRecord?.id ?? null,
       paymentMethod: trip.paymentRecord?.paymentMethod ?? null,
       paymentRecordCreatedAt: trip.paymentRecord?.createdAt ?? null,
+      // Enables the frontend polling loop to trigger rating flow
+      // even if the socket paymentUpdated event was missed
+      postTripAction:
+        trip.paymentStatus === PaymentStatus.PAID &&
+        requestingUserId === trip.ownerId
+          ? 'REQUIRE_RATING'
+          : trip.paymentStatus === PaymentStatus.PAID &&
+            requestingUserId === trip.driverId
+          ? 'CLEARED'
+          : null,
     };
   }
 
@@ -568,9 +578,10 @@ export class PaymentsService {
         },
       });
 
-      // 4. Create payment record
-      await tx.paymentRecord.create({
-        data: {
+      // 4. Create payment record — upsert prevents unique constraint crash on retry
+      await tx.paymentRecord.upsert({
+        where: { monnifyTxRef: txRef },
+        create: {
           tripId: trip.id,
           totalAmount: amountPaid,
           driverAmount: trip.driverEarnings,
@@ -580,6 +591,7 @@ export class PaymentsService {
           paidAt,
           webhookPayload: rawPayload,
         },
+        update: {}, // no-op: if record already exists, do nothing
       });
 
       // 5. Update driver wallet balance (only if a driver is assigned)
