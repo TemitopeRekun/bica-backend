@@ -43,8 +43,15 @@ export class PaymentsController {
     @Body() payload: any,
   ) {
     if (!req.rawBody) {
-      throw new BadRequestException('Raw body unavailable — cannot verify webhook signature');
+      this.logger.error(
+        'WEBHOOK CRITICAL: req.rawBody is undefined. ' +
+        'Check that rawBody:true is set in NestFactory.create() and ' +
+        'the Fastify rawBody plugin is wired correctly.',
+      );
+      // Return 200 so Monnify does not retry a server misconfiguration
+      return { responseCode: '00', responseMessage: 'Success' };
     }
+
     const rawBody = req.rawBody.toString('utf8');
 
     // This will throw 401 for signature mismatch or 500 for server errors,
