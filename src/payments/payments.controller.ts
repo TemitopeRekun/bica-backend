@@ -51,7 +51,7 @@ export class PaymentsController {
     // which correctly tells Monnify to retry if it's a transient failure.
     await this.paymentsService.processWebhook(rawBody, signature, payload);
 
-    return { status: 'received' };
+    return { responseCode: '00', responseMessage: 'Success' };
   }
 
   @UseGuards(AuthGuard, RolesGuard)
