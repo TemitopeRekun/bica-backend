@@ -41,20 +41,16 @@ export class PaymentsController {
     @Headers('monnify-signature') signature: string,
     @Body() payload: any,
   ) {
-    // 🛡️ IP Whitelisting (Monnify Official IP)
-    const allowedIp = '35.242.133.146';
     const clientIp = req.ip;
+    this.logger.log(`Incoming Monnify webhook from IP: ${clientIp}`);
 
-    if (clientIp !== allowedIp && process.env.NODE_ENV === 'production') {
-      this.logger.warn(`Rejected Monnify webhook from unauthorized IP: ${clientIp}`);
-      // Return 200 anyway to prevent scanning/probing, but don't process it
-      return { status: 'rejected' };
+    try {
+      const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+      await this.paymentsService.processWebhook(rawBody, signature, payload);
+    } catch (error) {
+      this.logger.error(`Monnify webhook processing failed: ${error.message}`);
+      // We still return 200 to acknowledge receipt as per Monnify docs
     }
-
-    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
-
-    await this.paymentsService
-      .processWebhook(rawBody, signature, payload);
 
     return { status: 'received' };
   }
