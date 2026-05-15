@@ -17,6 +17,8 @@ import * as bcrypt from 'bcryptjs';
 import { PaymentsService } from '../payments/payments.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
+import { MailService } from '../common/mail.service';
+import { ForgotPasswordDto, ResetPasswordDto, VerifyOtpDto } from './dto/otp.dto';
 
 @Injectable()
 export class AuthService {
@@ -27,6 +29,7 @@ export class AuthService {
     private paymentsService: PaymentsService,
     private adminRealtimeGateway: AdminRealtimeGateway,
     private cloudinaryService: CloudinaryService,
+    private mailService: MailService,
   ) { }
 
   async register(dto: RegisterDto) {
@@ -52,6 +55,10 @@ export class AuthService {
           'Drivers must provide bank details: bankName, bankCode, accountNumber, accountName',
         );
       }
+    }
+
+    if (dto.password !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
     }
 
     // 2. Hash the password — never store plain text
@@ -93,7 +100,11 @@ export class AuthService {
       }
     }
 
-    // 4. Create the user
+    // 5. Generate OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    // 6. Create the user
     const user = await this.prisma.user.create({
       data: {
         name: dto.name,
@@ -119,33 +130,20 @@ export class AuthService {
         bankCode: dto.bankCode,
         accountNumber: dto.accountNumber,
         accountName: dto.accountName,
+        otpCode,
+        otpExpiresAt,
+        isEmailVerified: false,
       },
     });
 
-    // 5. Issue JWT token for non-driver or handle response carefully
-    let token: string | undefined;
-    if (user.role !== UserRole.DRIVER) {
-      token = await this.signToken(user.id, user.email, user.role);
-    }
+    // 7. Send Verification Email
+    await this.mailService.sendVerificationOtp(user.email, user.name, otpCode);
 
     if (dto.role === UserRole.DRIVER) {
       setImmediate(() => {
         this.paymentsService.createDriverSubAccount(user.id);
       });
-    }
-
-    // 6. Return response (with token for owners, without for drivers)
-    const response: any = {
-      user: this.sanitizeUser(user),
-    };
-
-    if (token) {
-      response.token = token;
-    } else if (user.role === UserRole.DRIVER) {
-      response.message = 'Registration successful! Your driver account is pending admin approval.';
-    }
-
-    if (user.role === UserRole.DRIVER) {
+      
       this.adminRealtimeGateway.notifyPendingDriver({
         id: user.id,
         name: user.name,
@@ -157,7 +155,11 @@ export class AuthService {
       });
     }
 
-    return response;
+    return {
+      message: 'Registration successful! Please check your email for verification code.',
+      email: user.email,
+      isEmailVerified: false,
+    };
   }
 
   async login(dto: LoginDto) {
@@ -176,6 +178,11 @@ export class AuthService {
       throw new UnauthorizedException(
         'Account suspended. Please contact support.',
       );
+    }
+
+    // 3. Check if email is verified
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Email not verified. Please verify your email to continue.');
     }
 
     // 3. Compare password against stored hash
@@ -248,6 +255,181 @@ export class AuthService {
     });
   }
 
+  /**
+   * 🛡️ OTP Verification
+   * Validates the 6-digit code and unlocks the account.
+   */
+  async verifyEmail(dto: VerifyOtpDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+    if (user.isEmailVerified) return { message: 'Email already verified', success: true };
+
+    // 1. Check Expiry FIRST (before comparing the code)
+    if (!user.otpCode || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+      // Clear the expired code so the user cannot retry it
+      if (user.otpCode) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { otpCode: null, otpAttempts: 0 },
+        });
+      }
+      throw new BadRequestException('Verification code has expired. Please request a new one.');
+    }
+
+    // 2. Check if OTP matches
+    if (user.otpCode !== dto.otp) {
+      const attempts = (user.otpAttempts || 0) + 1;
+
+      if (attempts >= 5) {
+        // Invalidate OTP after 5 failed attempts (Brute-force protection)
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { otpCode: null, otpAttempts: 0 },
+        });
+        throw new BadRequestException('Too many failed attempts. Please request a new code.');
+      }
+
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { otpAttempts: attempts },
+      });
+
+      throw new BadRequestException(`Invalid verification code. ${5 - attempts} attempt(s) remaining.`);
+    }
+
+    // 3. Success -> Unlock account
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        isEmailVerified: true,
+        otpCode: null,
+        otpExpiresAt: null,
+        otpAttempts: 0,
+      },
+    });
+
+    const token = await this.signToken(user.id, user.email, user.role);
+    // Return sanitized user with corrected isEmailVerified flag
+    const sanitized = this.sanitizeUser({ ...user, isEmailVerified: true });
+    return {
+      message: 'Email verified successfully!',
+      token,
+      user: sanitized,
+    };
+  }
+
+  async resendOtp(email: string) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Guard: do not resend to already-verified accounts
+    if (user.isEmailVerified) {
+      throw new BadRequestException('This account is already verified. Please log in.');
+    }
+
+    // Rate Limit Check (60 seconds)
+    if (user.lastOtpSentAt && (Date.now() - user.lastOtpSentAt.getTime() < 60000)) {
+      throw new BadRequestException('Please wait 60 seconds before requesting a new code.');
+    }
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        otpCode,
+        otpExpiresAt,
+        otpAttempts: 0,
+        lastOtpSentAt: new Date(),
+      },
+    });
+
+    await this.mailService.sendVerificationOtp(user.email, user.name, otpCode);
+    return { message: 'A new verification code has been sent to your email.' };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (!user) {
+      // Security: Don't reveal if email exists
+      return { message: 'If an account exists with this email, a reset code has been sent.' };
+    }
+
+    // Rate Limit Check (60 seconds) — prevents inbox flooding and Resend quota abuse
+    if (user.lastOtpSentAt && (Date.now() - user.lastOtpSentAt.getTime() < 60000)) {
+      // Return the same message to avoid timing attacks revealing account existence
+      return { message: 'If an account exists with this email, a reset code has been sent.' };
+    }
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        otpCode,
+        otpExpiresAt,
+        otpAttempts: 0,
+        lastOtpSentAt: new Date(),
+      },
+    });
+
+    await this.mailService.sendPasswordResetOtp(user.email, user.name, otpCode);
+    return { message: 'If an account exists with this email, a reset code has been sent.' };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    if (dto.password !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (!user) throw new NotFoundException('User not found');
+
+    // 1. Check Expiry FIRST
+    if (!user.otpCode || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+      throw new BadRequestException('Reset code has expired. Please request a new one.');
+    }
+
+    // 2. Validate OTP with brute-force protection
+    if (user.otpCode !== dto.otp) {
+      const attempts = (user.otpAttempts || 0) + 1;
+
+      if (attempts >= 5) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { otpCode: null, otpAttempts: 0 },
+        });
+        throw new BadRequestException('Too many failed attempts. Please request a new reset code.');
+      }
+
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { otpAttempts: attempts },
+      });
+
+      throw new BadRequestException(`Invalid reset code. ${5 - attempts} attempt(s) remaining.`);
+    }
+
+    // 3. Update Password
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        otpCode: null,
+        otpExpiresAt: null,
+        otpAttempts: 0,
+      },
+    });
+
+    return { message: 'Password updated successfully. You can now log in.' };
+  }
+
   // Signs a JWT token with the user's id, email and role embedded
   private async signToken(id: string, email: string, role: UserRole) {
     const payload = { sub: id, email, role };
@@ -257,7 +439,8 @@ export class AuthService {
 
   // Removes passwordHash before sending user data to frontend
   private sanitizeUser(user: any) {
-    const { passwordHash, ...rest } = user;
+    const { passwordHash, otpCode, otpExpiresAt, otpAttempts, lastOtpSentAt, ...rest } = user;
     return rest;
   }
 }
+

@@ -11,6 +11,7 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { VerifyOtpDto, ForgotPasswordDto, ResetPasswordDto, ResendOtpDto } from './dto/otp.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 
 @Controller('auth')
@@ -30,6 +31,30 @@ export class AuthController {
   login(@Body() dto: LoginDto) {
     this.logger.log(`🔑 Login attempt for email: ${dto.email}`);
     return this.authService.login(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('verify-email')
+  verifyEmail(@Body() dto: VerifyOtpDto) {
+    return this.authService.verifyEmail(dto);
+  }
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('resend-otp')
+  resendOtp(@Body() dto: ResendOtpDto) {
+    return this.authService.resendOtp(dto.email);
+  }
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @UseGuards(AuthGuard)

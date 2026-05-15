@@ -43,6 +43,10 @@ export class RegisterDto {
   @MinLength(6)
   password: string;
 
+  @IsString()
+  @IsNotEmpty()
+  confirmPassword: string;
+
   @IsEnum(UserRole)
   role: UserRole;
 

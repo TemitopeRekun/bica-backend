@@ -6,6 +6,8 @@ import { AuthService } from './auth.service';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PaymentsModule } from '../payments/payments.module';
 import { AdminRealtimeModule } from '../admin/admin-realtime.module';
+import { MailService } from '../common/mail.service';
+import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 
 @Module({
   imports: [
@@ -19,9 +21,10 @@ import { AdminRealtimeModule } from '../admin/admin-realtime.module';
     }),
     forwardRef(() => PaymentsModule),
     AdminRealtimeModule,
+    CloudinaryModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, AuthGuard],
-  exports: [AuthGuard, JwtModule, AuthService],
+  providers: [AuthService, AuthGuard, MailService],
+  exports: [AuthGuard, JwtModule, AuthService, MailService],
 })
 export class AuthModule {}
