@@ -212,7 +212,7 @@ export class RidesService {
       await this.rideQueue.add('ride-search', { tripId: trip.id, pickupLat: dto.pickupLat, pickupLng: dto.pickupLng }, { delay: delayMs });
     } else {
       this.gateway.notifyDriverNewRide(dto.driverId!, trip);
-      this.fcmService.sendToUser(dto.driverId!, {
+      this.fcmService.queueNotification(dto.driverId!, {
         title: 'New Ride Request!',
         body: `You have a new ride request from ${(trip as any).owner.name}.`,
         data: { tripId: trip.id, type: 'new_ride' },
@@ -336,7 +336,7 @@ export class RidesService {
       });
 
       this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
-      this.fcmService.sendToUser(updated.ownerId, {
+      this.fcmService.queueNotification(updated.ownerId, {
         title: 'Driver Found!',
         body: `${updated.driver?.name ?? 'A driver'} has accepted your ride. Verification Code: ${otp}`,
         data: { tripId, type: 'ride_accepted', otp },
@@ -380,7 +380,7 @@ export class RidesService {
 
     // Notify owner of new PIN
     this.gateway.server.to(`user:${updated.ownerId}`).emit('ride:otp_regenerated', { tripId, otp: newOtp });
-    this.fcmService.sendToUser(updated.ownerId, {
+    this.fcmService.queueNotification(updated.ownerId, {
       title: 'New Verification Code',
       body: `Your new ride verification code is ${newOtp}`,
       data: { tripId, otp: newOtp, type: 'otp_regenerated' }
@@ -429,7 +429,7 @@ export class RidesService {
         this.logger.log(`📡 [WS] Cancellation sent to Driver ${trip.driverId} for Trip ${tripId}`);
       }
 
-      this.fcmService.sendToUser(otherPartyId, {
+      this.fcmService.queueNotification(otherPartyId, {
         title: 'Trip Cancelled',
         body: `The trip has been cancelled by the ${role.toLowerCase()}.`,
         data: { tripId, type: 'ride_cancelled' },
@@ -694,7 +694,7 @@ export class RidesService {
       [TripStatus.COMPLETED]: 'Trip completed. Please proceed to payment.',
     };
     if (bodyMap[status]) {
-      this.fcmService.sendToUser(trip.ownerId, { title: 'Trip Update', body: bodyMap[status], data: { tripId: trip.id, status } }).catch(e => this.logger.error(`FCM Push Error: ${e.message}`));
+      this.fcmService.queueNotification(trip.ownerId, { title: 'Trip Update', body: bodyMap[status], data: { tripId: trip.id, status } }).catch(e => this.logger.error(`FCM Push Error: ${e.message}`));
     }
   }
 }

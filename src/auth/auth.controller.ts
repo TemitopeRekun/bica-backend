@@ -37,4 +37,11 @@ export class AuthController {
   getMe(@Request() req: any) {
     return this.authService.getMe(req.user.sub);
   }
+
+  @UseGuards(AuthGuard)
+  @Post('logout')
+  async logout(@Request() req: any) {
+    await this.authService.logout(req.user.sub);
+    return { success: true, message: 'Logged out successfully' };
+  }
 }

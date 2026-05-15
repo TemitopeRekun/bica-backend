@@ -232,6 +232,22 @@ export class AuthService {
     return this.sanitizeUser(user);
   }
 
+  /**
+   * 🛡️ Secure Logout
+   * Clears FCM token and online status to prevent data leakage between users on the same device.
+   */
+  async logout(userId: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        fcmToken: null,
+        isOnline: false,
+        locationLat: null,
+        locationLng: null,
+      },
+    });
+  }
+
   // Signs a JWT token with the user's id, email and role embedded
   private async signToken(id: string, email: string, role: UserRole) {
     const payload = { sub: id, email, role };

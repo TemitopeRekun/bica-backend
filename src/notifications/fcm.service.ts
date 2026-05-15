@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import { PrismaService } from '../prisma/prisma.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class FcmService implements OnModuleInit {
@@ -10,10 +12,10 @@ export class FcmService implements OnModuleInit {
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    @InjectQueue('notifications-queue') private readonly notificationsQueue: Queue,
   ) {}
 
   onModuleInit() {
-    // Prevent multiple initializations if the module is initialized more than once
     if (admin.apps.length > 0) {
       return;
     }
@@ -30,15 +32,10 @@ export class FcmService implements OnModuleInit {
     }
 
     try {
-      // 1. Handle common formatting issues: surrounding quotes and escaped newlines
       let formattedKey = privateKey.trim().replace(/^"|"$/g, '');
-      
-      // Replace literal \n strings with actual newlines
       formattedKey = formattedKey.replace(/\\n/g, '\n');
 
-      // 2. If the key still doesn't have internal newlines, it might be a single-line string
-      // that needs PEM wrapping (common in some environment variable managers)
-      if (!formattedKey.includes('\n', 30)) { // Check after the header
+      if (!formattedKey.includes('\n', 30)) {
         const header = '-----BEGIN PRIVATE KEY-----';
         const footer = '-----END PRIVATE KEY-----';
         
@@ -65,46 +62,59 @@ export class FcmService implements OnModuleInit {
   }
 
   /**
-   * Send a notification to a specific user by fetching their FCM token from the database.
+   * 🚀 Industrial Grade: Offloads the notification to a background queue.
+   * This ensures the main API thread is never blocked by Firebase network latency.
    */
-  async sendToUser(
+  async queueNotification(
     userId: string,
     payload: { title: string; body: string; data?: Record<string, string> },
   ) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { fcmToken: true },
+    this.logger.debug(`Queuing notification for user ${userId}`);
+    await this.notificationsQueue.add('send-notification', {
+      userId,
+      payload,
+    }, {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 1000,
+      },
+      removeOnComplete: true,
+      removeOnFail: 1000, // Keep failed jobs for 1000 entries for debugging
     });
-
-    if (!user || !user.fcmToken) {
-      this.logger.debug(`User ${userId} has no registered FCM token. Skipping notification.`);
-      return;
-    }
-
-    return this.sendDirect(user.fcmToken, userId, payload);
   }
 
   /**
-   * Internal method to send a message via FCM.
+   * Internal method used by the processor to send a message via FCM.
    */
-  private async sendDirect(
+  async sendDirectToToken(
     token: string,
     userId: string,
     payload: { title: string; body: string; data?: Record<string, string> },
   ) {
     try {
+      // 🚀 Industrial Grade: Ensure all data payload values are strings.
+      // FCM throws an error if any value in the 'data' record is a non-string.
+      const sanitizedData: Record<string, string> = {};
+      if (payload.data) {
+        Object.entries(payload.data).forEach(([key, value]) => {
+          sanitizedData[key] = String(value);
+        });
+      }
+
       const message: admin.messaging.Message = {
         token,
         notification: {
           title: payload.title,
           body: payload.body,
         },
-        data: payload.data,
+        data: sanitizedData,
         android: {
           priority: 'high',
           notification: {
             channelId: 'ride_updates',
             priority: 'high',
+            sound: 'default',
           },
         },
         apns: {
@@ -123,7 +133,6 @@ export class FcmService implements OnModuleInit {
     } catch (error) {
       this.logger.error(`Error sending FCM message to User ${userId}: ${error.message}`);
       
-      // If the token is invalid, clear it from the database
       if (
         error.code === 'messaging/registration-token-not-registered' ||
         error.code === 'messaging/invalid-registration-token'
@@ -136,5 +145,24 @@ export class FcmService implements OnModuleInit {
       }
       throw error;
     }
+  }
+
+  /**
+   * Legacy wrapper for synchronous sending (use queueNotification instead for scale)
+   */
+  async sendToUser(
+    userId: string,
+    payload: { title: string; body: string; data?: Record<string, string> },
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { fcmToken: true },
+    });
+
+    if (!user || !user.fcmToken) {
+      return;
+    }
+
+    return this.sendDirectToToken(user.fcmToken, userId, payload);
   }
 }

@@ -101,6 +101,9 @@ export class RidesGateway
     this.logger.debug(`Owner ${data.ownerId} joined room user:${data.ownerId}`);
   }
 
+  private lastLocationUpdate = new Map<string, number>();
+  private readonly THROTTLE_MS = 1000; // 1 second
+
   @SubscribeMessage('driverlocation')
   handleLocationUpdate(
     @MessageBody() data: { driverId: string; lat: number; lng: number },
@@ -108,6 +111,16 @@ export class RidesGateway
     if (!Number.isFinite(data.lat) || !Number.isFinite(data.lng)) {
       return;
     }
+
+    // 🛡️ Throttling Logic: Ensure we only process one update per driver every THROTTLE_MS
+    const now = Date.now();
+    const lastUpdate = this.lastLocationUpdate.get(data.driverId) || 0;
+
+    if (now - lastUpdate < this.THROTTLE_MS) {
+      return; // Drop the update if it's too frequent
+    }
+
+    this.lastLocationUpdate.set(data.driverId, now);
 
     // Emit to anyone tracking this driver
     this.server.to(`tracking:driver:${data.driverId}`).emit('locationupdated', {
