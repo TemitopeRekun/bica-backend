@@ -204,7 +204,7 @@ export class RidesService {
       } as any,
       include: {
         owner: { select: { id: true, name: true, phone: true } },
-        driver: { select: { id: true, name: true, phone: true, rating: true } },
+        driver: { select: { id: true, name: true, phone: true, ratingPoints: true } },
       },
     });
 
@@ -267,7 +267,7 @@ export class RidesService {
         },
         include: {
           owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-          driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+          driver: { select: { id: true, name: true, phone: true, avatarUrl: true, ratingPoints: true } },
           rating: { select: { id: true } },
         },
         orderBy: { updatedAt: 'desc' },
@@ -306,7 +306,7 @@ export class RidesService {
       where: { id },
       include: {
         owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, rating: true } },
+        driver: { select: { id: true, name: true, phone: true, avatarUrl: true, ratingPoints: true } },
       },
     });
     if (!trip) throw new NotFoundException('Trip not found');
@@ -333,7 +333,7 @@ export class RidesService {
         },
         include: {
           owner: { select: { id: true, name: true, phone: true } },
-          driver: { select: { id: true, name: true, rating: true, avatarUrl: true } },
+          driver: { select: { id: true, name: true, ratingPoints: true, avatarUrl: true } },
         },
       });
 
@@ -446,7 +446,7 @@ export class RidesService {
       where: { id: tripId },
       include: {
         owner: { select: { id: true, name: true, phone: true } },
-        driver: { select: { id: true, name: true, phone: true, rating: true } },
+        driver: { select: { id: true, name: true, phone: true, ratingPoints: true } },
       }
     });
     if (!trip) throw new NotFoundException('Trip not found');
@@ -559,7 +559,7 @@ export class RidesService {
       data: updateData,
       include: {
         owner: { select: { id: true, name: true, phone: true } },
-        driver: { select: { id: true, name: true, phone: true, rating: true } },
+        driver: { select: { id: true, name: true, phone: true, ratingPoints: true } },
       },
     });
 
@@ -598,7 +598,7 @@ export class RidesService {
             id: true,
             name: true,
             avatarUrl: true,
-            rating: true,
+            ratingPoints: true,
             totalTrips: true,
           }
         }

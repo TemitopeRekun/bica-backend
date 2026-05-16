@@ -36,7 +36,7 @@ export class UsersService {
         email: true,
         phone: true,
         role: true,
-        rating: true,
+        ratingPoints: true,
         totalTrips: true,
         avatarUrl: true,
         walletBalance: true,
@@ -72,7 +72,7 @@ export class UsersService {
         email: true,
         phone: true,
         role: true,
-        rating: true,
+        ratingPoints: true,
         totalTrips: true,
         avatarUrl: true,
         walletBalance: true,
@@ -277,7 +277,7 @@ export class UsersService {
         locationLat: true,
         locationLng: true,
         transmission: true,
-        rating: true,
+        ratingPoints: true,
         totalTrips: true,
         avatarUrl: true,
         tripsAsDriver: {
@@ -298,7 +298,7 @@ export class UsersService {
       !d.isBlocked &&
       d.locationLat !== null &&
       d.locationLng !== null &&
-      d.tripsAsDriver.length === 0 &&
+      (d as any).tripsAsDriver.length === 0 &&
       (!searchTransmission
         ? true
         : searchTransmission === 'MANUAL'
@@ -319,7 +319,7 @@ export class UsersService {
         return {
           id: driver.id,
           name: driver.name,
-          rating: driver.rating,
+          rating: (driver as any).ratingPoints,
           totalTrips: driver.totalTrips,
           avatarUrl: driver.avatarUrl,
           transmission: driver.transmission,

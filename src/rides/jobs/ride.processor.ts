@@ -79,7 +79,7 @@ export class RideProcessor extends WorkerHost {
       select: {
         id: true,
         name: true,
-        rating: true,
+        ratingPoints: true,
         avatarUrl: true,
         transmission: true,
         locationLat: true,
@@ -152,7 +152,7 @@ export class RideProcessor extends WorkerHost {
                 select: { id: true, name: true, phone: true, avatarUrl: true },
               },
               driver: {
-                select: { id: true, name: true, phone: true, avatarUrl: true, rating: true, transmission: true },
+                select: { id: true, name: true, phone: true, avatarUrl: true, ratingPoints: true, transmission: true },
               },
             },
           });
