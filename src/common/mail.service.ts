@@ -146,7 +146,7 @@ export class MailService {
     if (this.resend) {
       try {
         const { data, error } = await this.resend.emails.send({
-          from: 'Bica <notifications@bicadriver.com>',
+          from: 'Bica <onboarding@resend.dev>',
           to,
           subject,
           html,
@@ -280,27 +280,24 @@ export class MailService {
   }
 
   private async sendMail(to: string, subject: string, html: string, otp: string) {
-    if (this.resend) {
-      try {
-        const { data, error } = await this.resend.emails.send({
-          from: 'Bica <notifications@bicadriver.com>',
-          to,
-          subject,
-          html,
-        });
-
-        if (error) {
-          this.logger.error(`Resend Error: ${error.message}`);
-          this.logger.log(`[FALLBACK] OTP for ${to}: ${otp}`);
-        } else {
-          this.logger.log(`✅ Email sent to ${to}. ID: ${data?.id}`);
-        }
-      } catch (err) {
-        this.logger.error(`Failed to send email: ${err.message}`);
-        this.logger.log(`[FALLBACK] OTP for ${to}: ${otp}`);
-      }
-    } else {
+    if (!this.resend) {
       this.logger.log(`[DEV MODE] OTP for ${to} → ${otp}`);
+      return;
     }
+
+    const { data, error } = await this.resend.emails.send({
+      from: 'Bica <notifications@bicadriver.com>',
+      to,
+      subject,
+      html,
+    });
+
+    if (error) {
+      this.logger.error(`Resend error sending to ${to}: ${JSON.stringify(error)}`);
+      this.logger.log(`[FALLBACK OTP] ${to} → ${otp}`);
+      throw new Error(`Email delivery failed: ${error.message}`);
+    }
+
+    this.logger.log(`✅ Email sent to ${to}. ID: ${data?.id}`);
   }
 }
