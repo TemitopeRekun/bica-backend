@@ -146,6 +146,37 @@ export class UsersService {
 
   // Driver toggles online/offline — going online REQUIRES current GPS coords
   async updateOnlineStatus(id: string, dto: UpdateOnlineStatusDto) {
+    if (dto.isOnline) {
+      const driver = await this.prisma.user.findUnique({
+        where: { id },
+        select: { isBlocked: true, suspendedUntil: true, suspensionTier: true },
+      });
+
+      if (driver?.isBlocked) {
+        if (!driver.suspendedUntil) {
+          throw new ForbiddenException('Your account has been blocked. Please contact support.');
+        }
+
+        if (driver.suspendedUntil > new Date()) {
+          throw new ForbiddenException(
+            `Your account is suspended until ${driver.suspendedUntil.toISOString()}. You cannot go online until your suspension is lifted.`,
+          );
+        }
+
+        // Suspension has expired — auto-lift Tier 1; Tier 2 requires admin review
+        if ((driver.suspensionTier ?? 0) <= 1) {
+          await this.prisma.user.update({
+            where: { id },
+            data: { isBlocked: false, suspendedUntil: null },
+          });
+        } else {
+          throw new ForbiddenException(
+            'Your suspension period has ended, but your account requires admin review before reinstatement.',
+          );
+        }
+      }
+    }
+
     const data: any = { isOnline: dto.isOnline };
 
     // Atomically update location when going online so driver is
@@ -387,6 +418,8 @@ export class UsersService {
         role: true,
         approvalStatus: true,
         isBlocked: true,
+        suspendedUntil: true,
+        suspensionTier: true,
         isOnline: true,
         locationLat: true,
         locationLng: true,
@@ -403,14 +436,18 @@ export class UsersService {
 
     if (!driver) throw new NotFoundException('Driver not found');
 
+    const suspensionActive = driver.isBlocked && !!driver.suspendedUntil && driver.suspendedUntil > new Date();
+    const suspensionExpired = driver.isBlocked && !!driver.suspendedUntil && driver.suspendedUntil <= new Date();
+
     const checks = {
-      isDriver:           driver.role === 'DRIVER',
-      isApproved:         driver.approvalStatus === 'APPROVED',
-      isNotBlocked:       !driver.isBlocked,
-      isOnline:           driver.isOnline,
-      hasLocation:        driver.locationLat !== null && driver.locationLng !== null,
-      hasNoActiveTrip:    driver.tripsAsDriver.length === 0,
-      hasSubAccount:      !!driver.monnifySubAccountCode,
+      isDriver:              driver.role === 'DRIVER',
+      isApproved:            driver.approvalStatus === 'APPROVED',
+      isNotBlocked:          !driver.isBlocked,
+      isNotActivelySuspended: !suspensionActive,
+      isOnline:              driver.isOnline,
+      hasLocation:           driver.locationLat !== null && driver.locationLng !== null,
+      hasNoActiveTrip:       driver.tripsAsDriver.length === 0,
+      hasSubAccount:         !!driver.monnifySubAccountCode,
     };
 
     const failing = Object.entries(checks)
@@ -427,6 +464,10 @@ export class UsersService {
         role: driver.role,
         approvalStatus: driver.approvalStatus,
         isBlocked: driver.isBlocked,
+        suspendedUntil: driver.suspendedUntil,
+        suspensionTier: driver.suspensionTier,
+        suspensionActive,
+        suspensionExpired,
         isOnline: driver.isOnline,
         locationLat: driver.locationLat,
         locationLng: driver.locationLng,
