@@ -52,6 +52,7 @@ async function main() {
       role: 'ADMIN',
       approvalStatus: 'APPROVED',
       isBlocked: false,
+      isEmailVerified: true,
     },
     create: {
       name: adminName,
@@ -61,6 +62,7 @@ async function main() {
       role: 'ADMIN',
       approvalStatus: 'APPROVED',
       isBlocked: false,
+      isEmailVerified: true,
     },
   });
 

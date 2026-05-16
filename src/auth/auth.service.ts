@@ -200,8 +200,8 @@ export class AuthService {
       );
     }
 
-    // 3. Check if email is verified
-    if (!user.isEmailVerified) {
+    // 3. Check if email is verified (admins are pre-verified via seed, skip this gate)
+    if (!user.isEmailVerified && user.role !== UserRole.ADMIN) {
       throw new ForbiddenException('Email not verified. Please verify your email to continue.');
     }
 
