@@ -41,6 +41,130 @@ export class MailService {
     await this.sendMail(email, subject, html, otp);
   }
 
+  async sendTier1RatingWarning(email: string, name: string) {
+    const subject = '⚠️ Rating Warning — BicaDriver';
+    const html = this.buildNotificationEmail({
+      preheader: 'Your account rating is dropping below the required rating.',
+      title: subject,
+      body: `Dear Driver ${name},<br><br>Your account rating is dropping below the required rating allowed by the BicaDriver rating system.<br><br>In the event your rating drops below 4.5 stars, your account will be suspended for 72 hours for evaluation and you may lose your account if it does not improve.`,
+    });
+    await this.sendNotificationMail(email, subject, html);
+  }
+
+  async sendTier1Suspension(email: string, name: string, suspendedUntil: Date) {
+    const subject = '🚫 Account Suspended — BicaDriver';
+    const html = this.buildNotificationEmail({
+      preheader: 'Your account has been automatically suspended for 72 hours.',
+      title: subject,
+      body: `Dear Driver ${name},<br><br>Your account has been automatically suspended for 72 hours as your rating has dropped below 4.5 stars.<br><br>Your suspension will lift on ${suspendedUntil.toLocaleString()}. Please use this time to reflect on your service quality. You may lose your account permanently if your rating does not improve after reinstatement.<br><br>If you believe there has been an error, please reach out to our support team at support@bicadriver.com.`,
+    });
+    await this.sendNotificationMail(email, subject, html);
+  }
+
+  async sendTier2RatingWarning(email: string, name: string) {
+    const subject = '⚠️ Final Rating Warning — BicaDriver';
+    const html = this.buildNotificationEmail({
+      preheader: 'Your account rating is dropping below the required rating.',
+      title: subject,
+      body: `Dear Driver ${name},<br><br>Your account rating is dropping below the required rating allowed by the BicaDriver rating system.<br><br>In the event your rating drops below 4.0 stars, your account will be suspended for 1 month for evaluation and you may lose your account permanently if it does not improve.`,
+    });
+    await this.sendNotificationMail(email, subject, html);
+  }
+
+  async sendTier2Suspension(email: string, name: string, suspendedUntil: Date) {
+    const subject = '🚫 Account Suspended (1 Month) — BicaDriver';
+    const html = this.buildNotificationEmail({
+      preheader: 'Your account has been suspended for 1 month.',
+      title: subject,
+      body: `Dear Driver ${name},<br><br>Your account has been suspended for 1 month as your rating has dropped below 4.0 stars.<br><br>Your account will remain suspended until ${suspendedUntil.toLocaleString()}. Following this period, our admin team will review your account. You may lose your account permanently if your rating does not improve.<br><br>If you believe there has been an error, please reach out to our support team at support@bicadriver.com.`,
+    });
+    await this.sendNotificationMail(email, subject, html);
+  }
+
+  private buildNotificationEmail(opts: {
+    preheader: string;
+    title: string;
+    body: string;
+  }): string {
+    return \`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>Bica</title>
+</head>
+<body style="margin:0;padding:0;background:#F4F4F8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <span style="display:none;max-height:0;overflow:hidden;mso-hide:all;">\${opts.preheader}</span>
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F4F4F8;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table width="100%" style="max-width:560px;" cellpadding="0" cellspacing="0">
+          <tr>
+            <td align="center" style="padding-bottom:24px;">
+              <table cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background:#1A0533;border-radius:14px;padding:12px 24px;">
+                    <span style="font-size:22px;font-weight:900;color:#FFFFFF;letter-spacing:-0.5px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+                      BICA<span style="color:#A78BFA;">.</span>
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#FFFFFF;border-radius:20px;padding:40px 36px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
+              <p style="margin:0 0 8px 0;font-size:22px;font-weight:800;color:#0A0A23;line-height:1.3;">
+                \${opts.title}
+              </p>
+              <p style="margin:0 0 32px 0;font-size:15px;color:#6B6B8A;line-height:1.6;white-space:pre-wrap;">
+                \${opts.body}
+              </p>
+              <hr style="border:none;border-top:1px solid #EDEDF5;margin:0 0 24px 0;" />
+              <p style="margin:0;font-size:12px;color:#9B9BB8;line-height:1.6;text-align:center;">
+                If you have any questions or need support, please contact us at support@bicadriver.com.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding-top:24px;">
+              <p style="margin:0;font-size:12px;color:#9B9BB8;">
+                &copy; \${new Date().getFullYear()} Bica Drive. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>\`;
+  }
+
+  private async sendNotificationMail(to: string, subject: string, html: string) {
+    if (this.resend) {
+      try {
+        const { data, error } = await this.resend.emails.send({
+          from: 'Bica <notifications@bicadriver.com>',
+          to,
+          subject,
+          html,
+        });
+
+        if (error) {
+          this.logger.error(\`Resend Error: \${error.message}\`);
+        } else {
+          this.logger.log(\`✅ Notification email sent to \${to}. ID: \${data?.id}\`);
+        }
+      } catch (err) {
+        this.logger.error(\`Failed to send email: \${err.message}\`);
+      }
+    } else {
+      this.logger.log(\`[DEV MODE] Notification to \${to} → \${subject}\`);
+    }
+  }
+
   /**
    * Builds a consistent, branded HTML email template for all OTP communications.
    */

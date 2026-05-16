@@ -108,6 +108,19 @@ export class AdminRealtimeGateway
     this.emitAdminEvent('admin:driver:pending_approval', { user });
   }
 
+  notifyRatingWarning(payload: {
+    driverId: string; driverName: string; newRating: number; tier: 1 | 2;
+  }) {
+    this.emitAdminEvent('admin:driver:rating_warning', payload);
+  }
+
+  notifyDriverSuspended(payload: {
+    driverId: string; driverName: string; newRating: number;
+    suspensionTier: 1 | 2; suspendedUntil: Date;
+  }) {
+    this.emitAdminEvent('admin:driver:suspended', payload);
+  }
+
   private emitAdminEvent(event: string, payload: Record<string, unknown>) {
     const data = {
       ...payload,

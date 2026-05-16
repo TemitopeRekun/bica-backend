@@ -17,6 +17,7 @@ import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { FcmService } from '../notifications/fcm.service';
 import { RedisService } from '../redis/redis.service';
+import { MailService } from '../common/mail.service';
 
 @Injectable()
 export class RidesService {
@@ -29,6 +30,7 @@ export class RidesService {
     @InjectQueue('rides-queue') private rideQueue: Queue,
     private fcmService: FcmService,
     private redis: RedisService,
+    private mailService: MailService,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -616,7 +618,6 @@ export class RidesService {
   }
 
   async rateTrip(tripId: string, ownerId: string, dto: RateTripDto) {
-    // 1. Validation Order
     const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
     if (!trip) throw new NotFoundException('Trip not found');
     if (trip.ownerId !== ownerId) throw new ForbiddenException('Access denied');
@@ -625,48 +626,146 @@ export class RidesService {
     if (trip.paymentStatus !== PaymentStatus.PAID) throw new BadRequestException('Trip payment must be confirmed before rating');
 
     return await this.prisma.$transaction(async (tx) => {
-      // 2. Concurrency Check
       const existing = await tx.rating.findUnique({ where: { tripId } });
-      if (existing) throw new BadRequestException('Trip already rated'); // Or ConflictException
+      if (existing) throw new BadRequestException('Trip already rated');
 
-      // 3. Driver aggregates calculation
       const driver = await tx.user.findUnique({ where: { id: trip.driverId! } });
       if (!driver) throw new NotFoundException('Driver not found');
 
-      const currentCount = driver.ratingCount ?? 0;
-      const currentAverage = driver.rating ?? 5.0;
-      const nextCount = currentCount + 1;
+      const previousPoints = driver.ratingPoints;
+      const streakBefore = driver.consecutiveFiveStars;
       
-      const nextAverage = ((currentAverage * currentCount) + dto.score) / nextCount;
+      let newPoints = previousPoints;
+      let newStreak = streakBefore;
+      let delta = 0;
 
-      // 4. Record Rating
+      if (dto.score === 1) {
+        newPoints = previousPoints - 1;
+        newStreak = 0;
+        delta = -1;
+      } else if (dto.score === 5) {
+        newStreak = streakBefore + 1;
+        if (newStreak >= 5) {
+          newPoints = Math.min(500, previousPoints + 1);
+          newStreak = 0;
+          delta = newPoints - previousPoints; // could be 0 if already 500
+        }
+      } else {
+        newStreak = 0;
+      }
+
+      let actionTriggered: string | null = null;
+      let isBlocked = driver.isBlocked;
+      let suspensionTier = driver.suspensionTier;
+      let suspendedUntil = driver.suspendedUntil;
+
+      if (newPoints === 455 && previousPoints > 455) {
+        actionTriggered = 'WARN_TIER1';
+      } else if (newPoints < 450 && previousPoints >= 450 && suspensionTier === 0) {
+        actionTriggered = 'SUSPEND_TIER1';
+        isBlocked = true;
+        suspensionTier = 1;
+        suspendedUntil = new Date(Date.now() + 72 * 60 * 60 * 1000); // +72h
+      } else if (newPoints === 415 && previousPoints > 415 && suspensionTier >= 1) {
+        actionTriggered = 'WARN_TIER2';
+      } else if (newPoints < 400 && previousPoints >= 400 && suspensionTier >= 1) {
+        actionTriggered = 'SUSPEND_TIER2';
+        isBlocked = true;
+        suspensionTier = 2;
+        const date = new Date();
+        date.setDate(date.getDate() + 30);
+        suspendedUntil = date;
+      }
+
       await tx.rating.create({
+        data: { tripId: trip.id, driverId: trip.driverId!, ownerId, score: dto.score },
+      });
+
+      await tx.ratingAuditLog.create({
         data: {
+          driverId: driver.id,
           tripId: trip.id,
-          driverId: trip.driverId!,
           ownerId,
           score: dto.score,
+          previousPoints,
+          newPoints,
+          delta,
+          streakBefore,
+          streakAfter: newStreak,
+          actionTriggered,
+        }
+      });
+
+      const updatedDriver = await tx.user.update({
+        where: { id: driver.id },
+        data: {
+          ratingPoints: newPoints,
+          ratingCount: driver.ratingCount + 1,
+          consecutiveFiveStars: newStreak,
+          isBlocked,
+          suspensionTier,
+          suspendedUntil,
         },
       });
 
-      // 5. Update Driver
-      const updatedDriver = await tx.user.update({
-        where: { id: trip.driverId! },
-        data: {
-          rating: nextAverage,
-          ratingCount: nextCount,
-        },
-      });
+      setTimeout(() => {
+        if (actionTriggered) {
+          this.triggerRatingNotifications(updatedDriver, actionTriggered, suspendedUntil).catch(e => this.logger.error(e));
+        }
+      }, 0);
 
       return {
         message: 'Rating submitted successfully',
         tripId: trip.id,
         driverId: updatedDriver.id,
         score: dto.score,
-        driverRating: updatedDriver.rating,
-        driverRatingCount: updatedDriver.ratingCount,
+        ratingPoints: updatedDriver.ratingPoints,
+        ratingCount: updatedDriver.ratingCount,
       };
     });
+  }
+
+  private async triggerRatingNotifications(driver: any, action: string, suspendedUntil: Date | null) {
+    try {
+      if (action === 'WARN_TIER1') {
+        this.fcmService.queueNotification(driver.id, {
+          title: '⚠️ Rating Warning',
+          body: 'Your rating is dropping. If it drops below 4.5, your account will be suspended for 72 hours.',
+          data: { type: 'rating_warning', tier: '1' }
+        }).catch(e => this.logger.error(`FCM Warning Error: ${e.message}`));
+        await this.mailService.sendTier1RatingWarning(driver.email, driver.name);
+        this.adminRealtimeGateway.notifyRatingWarning({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, tier: 1 });
+      } 
+      else if (action === 'SUSPEND_TIER1') {
+        this.fcmService.queueNotification(driver.id, {
+          title: '🚫 Account Suspended',
+          body: 'Your account has been suspended for 72 hours due to low ratings. If you believe this is an error, please contact support.',
+          data: { type: 'rating_suspension', tier: '1' }
+        }).catch(e => this.logger.error(`FCM Suspend Error: ${e.message}`));
+        await this.mailService.sendTier1Suspension(driver.email, driver.name, suspendedUntil!);
+        this.adminRealtimeGateway.notifyDriverSuspended({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, suspensionTier: 1, suspendedUntil: suspendedUntil! });
+      }
+      else if (action === 'WARN_TIER2') {
+        this.fcmService.queueNotification(driver.id, {
+          title: '⚠️ Final Rating Warning',
+          body: 'Your rating is dropping. If it drops below 4.0, your account will be suspended for 1 month.',
+          data: { type: 'rating_warning', tier: '2' }
+        }).catch(e => this.logger.error(`FCM Warning Error: ${e.message}`));
+        await this.mailService.sendTier2RatingWarning(driver.email, driver.name);
+        this.adminRealtimeGateway.notifyRatingWarning({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, tier: 2 });
+      }
+      else if (action === 'SUSPEND_TIER2') {
+        this.fcmService.queueNotification(driver.id, {
+          title: '🚫 Account Suspended (1 Month)',
+          body: 'Your account has been suspended for 1 month due to low ratings. If you believe this is an error, please contact support.',
+          data: { type: 'rating_suspension', tier: '2' }
+        }).catch(e => this.logger.error(`FCM Suspend Error: ${e.message}`));
+        await this.mailService.sendTier2Suspension(driver.email, driver.name, suspendedUntil!);
+        this.adminRealtimeGateway.notifyDriverSuspended({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, suspensionTier: 2, suspendedUntil: suspendedUntil! });
+      }
+    } catch (e) {
+      this.logger.error(`Failed to send rating notifications for driver ${driver.id}: ${e.message}`);
+    }
   }
 
   private validateStatusTransition(trip: any, userId: string, role: UserRole, newStatus: TripStatus) {

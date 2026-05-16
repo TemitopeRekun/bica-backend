@@ -45,4 +45,19 @@ export class AdminController {
   diagnoseDriver(@Param('id') id: string) {
     return this.usersService.diagnoseDriverAvailability(id);
   }
+
+  @Get('drivers/:id/rating-history')
+  getRatingHistory(@Param('id') id: string) {
+    return this.adminService.getRatingHistory(id);
+  }
+
+  @Post('drivers/:id/lift-suspension')
+  liftSuspension(@Param('id') id: string) {
+    return this.adminService.liftSuspension(id);
+  }
+
+  @Post('drivers/:id/terminate')
+  terminateDriver(@Param('id') id: string) {
+    return this.adminService.terminateDriver(id);
+  }
 }

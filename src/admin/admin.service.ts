@@ -26,7 +26,9 @@ export class AdminService {
       totalOwners,
       totalTrips,
       pendingDrivers,
-      earningsAggregate
+      earningsAggregate,
+      suspendedDriversCount,
+      warningDriversCount
     ] = await Promise.all([
       this.getUsers(defaultPage),
       this.getTrips(defaultPage),
@@ -44,6 +46,16 @@ export class AdminService {
         _sum: { commissionAmount: true },
         where: { status: 'COMPLETED' },
       }),
+      this.prisma.user.count({ where: { role: 'DRIVER', suspendedUntil: { not: null } } }),
+      this.prisma.user.count({ 
+        where: { 
+          role: 'DRIVER', 
+          OR: [
+            { ratingPoints: { gte: 400, lte: 415 } },
+            { ratingPoints: { gte: 450, lte: 455 } }
+          ]
+        } 
+      })
     ]);
 
     const mappedPending = pendingDrivers.map(u => this.mapAdminUser(u));
@@ -74,6 +86,8 @@ export class AdminService {
         totalTrips: totalTrips || 0,
         pendingDriversCount: pendingDrivers.length || 0,
         totalEarnings: earningsAggregate._sum.commissionAmount || 0,
+        suspendedDriversCount: suspendedDriversCount || 0,
+        warningDriversCount: warningDriversCount || 0,
       }
     };
   }
@@ -93,7 +107,11 @@ export class AdminService {
           email: true,
           phone: true,
           role: true,
-          rating: true,
+          ratingPoints: true,
+          ratingCount: true,
+          consecutiveFiveStars: true,
+          suspensionTier: true,
+          suspendedUntil: true,
           totalTrips: true,
           avatarUrl: true,
           approvalStatus: true,
@@ -224,5 +242,51 @@ export class AdminService {
       canRetrySubAccountSetup:
         !user.monnifySubAccountCode && !!user.bankCode && !!user.accountNumber,
     };
+  }
+
+  async getRatingHistory(driverId: string) {
+    return this.prisma.ratingAuditLog.findMany({
+      where: { driverId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+  }
+
+  async liftSuspension(driverId: string) {
+    const user = await this.prisma.user.update({
+      where: { id: driverId },
+      data: { isBlocked: false, suspendedUntil: null },
+    });
+    
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'LIFT_SUSPENSION',
+        entity: 'User',
+        entityId: driverId,
+        newValue: { isBlocked: false, suspendedUntil: null },
+      }
+    });
+    
+    this.adminRealtimeGateway.notifyUserUpdated('lift_suspension', user);
+    return user;
+  }
+
+  async terminateDriver(driverId: string) {
+    const user = await this.prisma.user.update({
+      where: { id: driverId },
+      data: { isBlocked: true, suspendedUntil: null },
+    });
+    
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'TERMINATE_DRIVER',
+        entity: 'User',
+        entityId: driverId,
+        newValue: { isBlocked: true, suspendedUntil: null },
+      }
+    });
+
+    this.adminRealtimeGateway.notifyUserUpdated('terminate_driver', user);
+    return user;
   }
 }

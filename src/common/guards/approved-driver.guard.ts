@@ -28,7 +28,7 @@ export class ApprovedDriverGuard implements CanActivate {
     // Fetch the latest user status from DB to be safe against old tokens
     const dbUser = await this.prisma.user.findUnique({
       where: { id: user.sub },
-      select: { approvalStatus: true, isBlocked: true },
+      select: { approvalStatus: true, isBlocked: true, suspendedUntil: true, suspensionTier: true },
     });
 
     if (!dbUser) {
@@ -36,7 +36,24 @@ export class ApprovedDriverGuard implements CanActivate {
     }
 
     if (dbUser.isBlocked) {
-      throw new ForbiddenException('Your account is blocked. Please contact support.');
+      if (dbUser.suspendedUntil) {
+        if (dbUser.suspendedUntil <= new Date()) {
+          if (dbUser.suspensionTier === 1) {
+            // Auto-lift Tier 1
+            await this.prisma.user.update({
+              where: { id: user.sub },
+              data: { isBlocked: false, suspendedUntil: null }
+            });
+          } else {
+            // Tier 2 -> Admin gate
+            throw new ForbiddenException('Your 1-month suspension has ended. Your account is pending admin review before reinstatement. Contact support.');
+          }
+        } else {
+          throw new ForbiddenException(`Your account is suspended until ${dbUser.suspendedUntil.toLocaleString()}. Contact support@bicadriver.com if you believe this is in error.`);
+        }
+      } else {
+        throw new ForbiddenException('Your account is blocked. Please contact support.');
+      }
     }
 
     if (dbUser.approvalStatus === ApprovalStatus.PENDING) {

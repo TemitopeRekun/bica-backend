@@ -59,111 +59,115 @@ enum SupportCategory {
 }
 
 model User {
-  id               String          @id @default(uuid())
-  name             String
-  email            String          @unique
-  phone            String
-  passwordHash     String
-  role             UserRole
-  rating           Float           @default(5.0)
-  ratingCount      Int             @default(0)
-  totalTrips       Int             @default(0)
-  avatarUrl        String?
-  walletBalance    Float           @default(0)
-  isBlocked        Boolean         @default(false)
-  isOnline         Boolean         @default(false)
-  carType          String?
-  carModel         String?
-  carYear          String?
-  gender           String?
-  address          String?
-  nationality      String?
-  age              String?
-  nin              String?
-  transmission     String?
-  approvalStatus   ApprovalStatus?
-  licenseImageUrl  String?
-  ninImageUrl      String?
-  selfieImageUrl   String?
-  backgroundCheckAccepted Boolean  @default(false)
-  locationLat      Float?
-  locationLng      Float?
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
-  tripsAsOwner     Trip[]          @relation("OwnerTrips")
-  tripsAsDriver    Trip[]          @relation("DriverTrips")
-  ratingsGiven     Rating[]        @relation("OwnerRatings")
-  ratingsReceived  Rating[]        @relation("DriverRatings")
-  bankName              String?
-  bankCode              String?
-  accountNumber         String?
-  accountName           String?
-  monnifySubAccountCode String?
-  payouts          Payout[]
-  disbursements   Disbursement[]
-  fcmToken              String?
-  deviceType            String? // e.g., 'ios', 'android'
-  auditLogs             AuditLog[]
-  supportTickets        SupportTicket[]
-  isEmailVerified       Boolean         @default(false)
-  otpCode               String?
-  otpExpiresAt          DateTime?
-  otpAttempts           Int             @default(0)
-  lastOtpSentAt         DateTime?
+  id                      String           @id @default(uuid())
+  name                    String
+  email                   String           @unique
+  phone                   String
+  passwordHash            String
+  role                    UserRole
+  ratingPoints            Int              @default(500)
+  ratingCount             Int              @default(0)
+  consecutiveFiveStars    Int              @default(0)
+  suspensionTier          Int              @default(0)
+  suspendedUntil          DateTime?
+  totalTrips              Int              @default(0)
+  avatarUrl               String?
+  walletBalance           Float            @default(0)
+  isBlocked               Boolean          @default(false)
+  isOnline                Boolean          @default(false)
+  carType                 String?
+  carModel                String?
+  carYear                 String?
+  gender                  String?
+  address                 String?
+  nationality             String?
+  age                     String?
+  nin                     String?
+  transmission            String?
+  approvalStatus          ApprovalStatus?
+  licenseImageUrl         String?
+  ninImageUrl             String?
+  selfieImageUrl          String?
+  backgroundCheckAccepted Boolean          @default(false)
+  locationLat             Float?
+  locationLng             Float?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+  tripsAsOwner            Trip[]           @relation("OwnerTrips")
+  tripsAsDriver           Trip[]           @relation("DriverTrips")
+  ratingsGiven            Rating[]         @relation("OwnerRatings")
+  ratingsReceived         Rating[]         @relation("DriverRatings")
+  ratingAuditLogs         RatingAuditLog[] @relation("DriverRatingAudit")
+  bankName                String?
+  bankCode                String?
+  accountNumber           String?
+  accountName             String?
+  monnifySubAccountCode   String?
+  payouts                 Payout[]
+  disbursements           Disbursement[]
+  fcmToken                String?
+  deviceType              String? // e.g., 'ios', 'android'
+  auditLogs               AuditLog[]
+  supportTickets          SupportTicket[]
+  isEmailVerified         Boolean          @default(false)
+  otpCode                 String?
+  otpExpiresAt            DateTime?
+  otpAttempts             Int              @default(0)
+  lastOtpSentAt           DateTime?
 
   @@index([role, isOnline, approvalStatus])
 }
 
 model Trip {
-  id               String      @id @default(uuid())
-  status           TripStatus  @default(PENDING)
-  pickupAddress    String
-  pickupLat        Float
-  pickupLng        Float
-  destAddress      String
-  destLat          Float
-  destLng          Float
-  amount           Float
-  distanceKm       Float
-  commissionAmount Float       @default(0)
-  driverEarnings   Float       @default(0)
-  commissionPercent Float      @default(25)
-  scheduledAt      DateTime?
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
-  completedAt      DateTime?
-  startedAt        DateTime?
-  estimatedMins    Float?
-  finalFare        Float? 
-  fareBreakdown    Json?
-  paymentStatus   PaymentStatus  @default(UNPAID)
-  monnifyTxRef    String?        @unique
-  paymentReference String?       @unique
-  paidAt          DateTime?
-  
+  id                String        @id @default(uuid())
+  status            TripStatus    @default(PENDING)
+  pickupAddress     String
+  pickupLat         Float
+  pickupLng         Float
+  destAddress       String
+  destLat           Float
+  destLng           Float
+  amount            Float
+  distanceKm        Float
+  commissionAmount  Float         @default(0)
+  driverEarnings    Float         @default(0)
+  commissionPercent Float         @default(25)
+  scheduledAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  completedAt       DateTime?
+  startedAt         DateTime?
+  estimatedMins     Float?
+  finalFare         Float?
+  fareBreakdown     Json?
+  paymentStatus     PaymentStatus @default(UNPAID)
+  monnifyTxRef      String?       @unique
+  paymentReference  String?       @unique
+  paidAt            DateTime?
+
   // 🛡️ Pricing Snapshots (SSOT)
-  baseFareSnapshot     Float?
-  pricePerKmSnapshot   Float?
-  timeRateSnapshot     Float?
-  minimumFareSnapshot  Float?
+  baseFareSnapshot            Float?
+  pricePerKmSnapshot          Float?
+  timeRateSnapshot            Float?
+  minimumFareSnapshot         Float?
   minimumFareDurationSnapshot Float?
-  
-  owner            User        @relation("OwnerTrips", fields: [ownerId], references: [id])
-  ownerId          String
-  driver           User?       @relation("DriverTrips", fields: [driverId], references: [id])
-  driverId         String?
-  rating           Rating?
-  otp              String?
+
+  owner              User            @relation("OwnerTrips", fields: [ownerId], references: [id])
+  ownerId            String
+  driver             User?           @relation("DriverTrips", fields: [driverId], references: [id])
+  driverId           String?
+  rating             Rating?
+  otp                String?
   acceptanceImageUrl String?
-  carFrontUrl      String?
-  carBackUrl       String?
-  carLeftUrl       String?
-  carRightUrl      String?
-  otpAttempts      Int         @default(0)
-  payout           Payout?
-  paymentRecord   PaymentRecord?
-  tripAuditLogs   TripAuditLog[]
-  supportTickets  SupportTicket[]
+  carFrontUrl        String?
+  carBackUrl         String?
+  carLeftUrl         String?
+  carRightUrl        String?
+  otpAttempts        Int             @default(0)
+  payout             Payout?
+  paymentRecord      PaymentRecord?
+  tripAuditLogs      TripAuditLog[]
+  supportTickets     SupportTicket[]
 
   @@index([status, createdAt])
   @@index([ownerId])
@@ -186,79 +190,98 @@ model Payout {
 }
 
 model Rating {
-  id         String   @id @default(uuid())
-  tripId     String   @unique
-  trip       Trip     @relation(fields: [tripId], references: [id])
-  driverId   String
-  driver     User     @relation("DriverRatings", fields: [driverId], references: [id])
-  ownerId    String
-  owner      User     @relation("OwnerRatings", fields: [ownerId], references: [id])
-  score      Int
-  createdAt  DateTime @default(now())
+  id        String   @id @default(uuid())
+  tripId    String   @unique
+  trip      Trip     @relation(fields: [tripId], references: [id])
+  driverId  String
+  driver    User     @relation("DriverRatings", fields: [driverId], references: [id])
+  ownerId   String
+  owner     User     @relation("OwnerRatings", fields: [ownerId], references: [id])
+  score     Int
+  createdAt DateTime @default(now())
 
   @@index([driverId])
   @@index([ownerId])
 }
 
+model RatingAuditLog {
+  id              String   @id @default(uuid())
+  driverId        String
+  driver          User     @relation("DriverRatingAudit", fields: [driverId], references: [id])
+  tripId          String
+  ownerId         String
+  score           Int // 1-5: the star score submitted
+  previousPoints  Int // ratingPoints before this event
+  newPoints       Int // ratingPoints after this event
+  delta           Int // -1, 0, or +1
+  streakBefore    Int
+  streakAfter     Int
+  actionTriggered String? // 'WARN_TIER1' | 'SUSPEND_TIER1' | 'WARN_TIER2' | 'SUSPEND_TIER2' | null
+  createdAt       DateTime @default(now())
+
+  @@index([driverId])
+  @@index([tripId])
+}
+
 model SystemSettings {
-  id          Int      @id @default(1)
-  baseFare    Float    @default(500)
-  pricePerKm  Float    @default(100)
-  timeRate    Float    @default(50)
-  commission       Float    @default(25)
-  autoApprove      Boolean  @default(false)
-  minimumFare      Float    @default(2000)
-  minimumFareDistance Float   @default(4.5)
-  minimumFareDuration Float   @default(20)
-  minAppVersion    String   @default("1.0.0")
-  latestAppVersion String   @default("1.0.0")
-  updatedAt        DateTime @updatedAt
-  updatedById String?
+  id                  Int      @id @default(1)
+  baseFare            Float    @default(500)
+  pricePerKm          Float    @default(100)
+  timeRate            Float    @default(50)
+  commission          Float    @default(25)
+  autoApprove         Boolean  @default(false)
+  minimumFare         Float    @default(2000)
+  minimumFareDistance Float    @default(4.5)
+  minimumFareDuration Float    @default(20)
+  minAppVersion       String   @default("1.0.0")
+  latestAppVersion    String   @default("1.0.0")
+  updatedAt           DateTime @updatedAt
+  updatedById         String?
 }
 
 model PaymentRecord {
-  id              String    @id @default(uuid())
-  tripId          String    @unique
-  trip            Trip      @relation(fields: [tripId], references: [id])
-  totalAmount     Float
-  driverAmount    Float
-  platformAmount  Float
-  monnifyTxRef    String    @unique
-  paymentMethod   String?
-  paidAt          DateTime
-  webhookPayload  Json
-  createdAt       DateTime  @default(now())
+  id             String   @id @default(uuid())
+  tripId         String   @unique
+  trip           Trip     @relation(fields: [tripId], references: [id])
+  totalAmount    Float
+  driverAmount   Float
+  platformAmount Float
+  monnifyTxRef   String   @unique
+  paymentMethod  String?
+  paidAt         DateTime
+  webhookPayload Json
+  createdAt      DateTime @default(now())
 }
 
 model Disbursement {
-  id            String             @id @default(uuid())
-  driverId      String
-  driver        User               @relation(fields: [driverId], references: [id])
-  amount        Float
-  bankName      String
-  bankCode      String
-  accountNumber String
-  accountName   String
-  monnifyRef    String?            @unique
-  status        DisbursementStatus @default(PENDING)
-  requestedAt   DateTime           @default(now())
-  completedAt   DateTime?
+  id             String             @id @default(uuid())
+  driverId       String
+  driver         User               @relation(fields: [driverId], references: [id])
+  amount         Float
+  bankName       String
+  bankCode       String
+  accountNumber  String
+  accountName    String
+  monnifyRef     String?            @unique
+  status         DisbursementStatus @default(PENDING)
+  requestedAt    DateTime           @default(now())
+  completedAt    DateTime?
   webhookPayload Json?
 }
 
 model AuditLog {
-  id          String   @id @default(uuid())
-  userId      String?
-  user        User?    @relation(fields: [userId], references: [id])
-  action      String
-  entity      String
-  entityId    String?
-  oldValue    Json?
-  newValue    Json?
-  ipAddress   String?
-  userAgent   String?
-  metadata    Json?
-  createdAt   DateTime @default(now())
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([action])
@@ -289,8 +312,8 @@ model SupportTicket {
   openedAt             DateTime
   createdAt            DateTime        @default(now())
 
-  user  User  @relation(fields: [userId], references: [id])
-  trip  Trip? @relation(fields: [tripId], references: [id])
+  user User  @relation(fields: [userId], references: [id])
+  trip Trip? @relation(fields: [tripId], references: [id])
 
   @@index([userId])
   @@index([category])
