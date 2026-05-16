@@ -41,6 +41,11 @@ export class AdminController {
     return this.adminService.retrySubAccount(id);
   }
 
+  @Get('users/:id/validate-bank')
+  validateDriverBank(@Param('id') id: string) {
+    return this.adminService.validateDriverBankAccount(id);
+  }
+
   @Get('users/:id/diagnose')
   diagnoseDriver(@Param('id') id: string) {
     return this.usersService.diagnoseDriverAvailability(id);

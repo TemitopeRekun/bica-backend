@@ -231,8 +231,19 @@ export class AdminService {
   async retrySubAccount(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
-    
-    return this.paymentsService.createDriverSubAccount(userId);
+
+    return this.paymentsService.retryDriverSubAccount(userId);
+  }
+
+  async validateDriverBankAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, bankName: true, bankCode: true, accountNumber: true, accountName: true, monnifySubAccountCode: true },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    return this.paymentsService.validateDriverBankAccount(userId);
   }
 
   private mapAdminUser(user: any) {

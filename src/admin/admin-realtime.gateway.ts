@@ -121,6 +121,12 @@ export class AdminRealtimeGateway
     this.emitAdminEvent('admin:driver:suspended', payload);
   }
 
+  notifySubAccountFailed(payload: {
+    driverId: string; driverName: string; error: string;
+  }) {
+    this.emitAdminEvent('admin:driver:subaccount_failed', payload);
+  }
+
   private emitAdminEvent(event: string, payload: Record<string, unknown>) {
     const data = {
       ...payload,

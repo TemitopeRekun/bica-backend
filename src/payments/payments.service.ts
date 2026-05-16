@@ -30,6 +30,7 @@ type DriverPayoutProfile = {
   bankName: string | null;
   bankCode: string | null;
   accountNumber: string | null;
+  accountName: string | null;
   monnifySubAccountCode: string | null;
 };
 
@@ -65,6 +66,7 @@ export class PaymentsService {
         bankName: true,
         bankCode: true,
         accountNumber: true,
+        accountName: true,
         monnifySubAccountCode: true,
       },
     });
@@ -222,6 +224,42 @@ export class PaymentsService {
     }
   }
 
+  async validateDriverBankAccount(driverId: string) {
+    const driver = await this.getDriverPayoutProfile(driverId);
+
+    if (!driver) throw new NotFoundException('Driver not found');
+    if (!driver.bankCode || !driver.accountNumber) {
+      throw new BadRequestException('Driver has no bank details on record.');
+    }
+
+    try {
+      const validated = await this.monnify.validateBankAccount(driver.bankCode, driver.accountNumber);
+      return {
+        valid: true,
+        accountNumber: driver.accountNumber,
+        accountName: validated.accountName,
+        bankCode: validated.bankCode,
+        storedBankName: driver.bankName,
+        storedAccountName: driver.accountName,
+        nameMatch: driver.accountName?.toLowerCase().trim() === validated.accountName?.toLowerCase().trim(),
+        subAccountActive: !!driver.monnifySubAccountCode,
+      };
+    } catch (error) {
+      const message = error instanceof MonnifyApiException
+        ? error.monnifyMessage || error.message
+        : error instanceof Error ? error.message : 'Unknown error';
+
+      return {
+        valid: false,
+        accountNumber: driver.accountNumber,
+        storedBankName: driver.bankName,
+        storedAccountName: driver.accountName,
+        subAccountActive: !!driver.monnifySubAccountCode,
+        error: message,
+      };
+    }
+  }
+
   async retryDriverSubAccount(driverId: string) {
     const result = await this.ensureDriverSubAccount(driverId);
 
@@ -251,6 +289,17 @@ export class PaymentsService {
         `Failed to create sub account for driver ${driverId}: ${message}`,
         trace,
       );
+
+      const driver = await this.prisma.user.findUnique({
+        where: { id: driverId },
+        select: { name: true },
+      });
+
+      this.adminRealtimeGateway.notifySubAccountFailed({
+        driverId,
+        driverName: driver?.name ?? 'Unknown Driver',
+        error: message,
+      });
     }
   }
 
