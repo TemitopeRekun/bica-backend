@@ -3,11 +3,12 @@ import {
   ConflictException,
   UnauthorizedException,
   BadRequestException,
-  NotFoundException, 
-  Inject, 
+  NotFoundException,
+  Inject,
   forwardRef,
   ForbiddenException,
 } from '@nestjs/common';
+import { randomInt } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
@@ -39,6 +40,25 @@ export class AuthService {
     });
 
     if (existing) {
+      if (!existing.isEmailVerified) {
+        if (existing.lastOtpSentAt && (Date.now() - existing.lastOtpSentAt.getTime() < 60000)) {
+          throw new BadRequestException(
+            'A verification email was recently sent. Please check your inbox or wait 60 seconds before requesting a new code.',
+          );
+        }
+        const otpCode = randomInt(100000, 1000000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+        await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { otpCode, otpExpiresAt, otpAttempts: 0, lastOtpSentAt: new Date() },
+        });
+        await this.mailService.sendVerificationOtp(existing.email, existing.name, otpCode);
+        return {
+          message: 'This email is already registered but not yet verified. A new verification code has been sent.',
+          email: existing.email,
+          isEmailVerified: false,
+        };
+      }
       throw new ConflictException('An account with this email already exists');
     }
 
@@ -101,7 +121,7 @@ export class AuthService {
     }
 
     // 5. Generate OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpCode = randomInt(100000, 1000000).toString();
     const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
     // 6. Create the user
@@ -273,7 +293,7 @@ export class AuthService {
       if (user.otpCode) {
         await this.prisma.user.update({
           where: { id: user.id },
-          data: { otpCode: null, otpAttempts: 0 },
+          data: { otpCode: null, otpExpiresAt: null, otpAttempts: 0 },
         });
       }
       throw new BadRequestException('Verification code has expired. Please request a new one.');
@@ -335,7 +355,7 @@ export class AuthService {
       throw new BadRequestException('Please wait 60 seconds before requesting a new code.');
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpCode = randomInt(100000, 1000000).toString();
     const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await this.prisma.user.update({
@@ -359,13 +379,19 @@ export class AuthService {
       return { message: 'If an account exists with this email, a reset code has been sent.' };
     }
 
+    if (!user.isEmailVerified) {
+      throw new BadRequestException(
+        'Your email address has not been verified. Please verify your email first. Check your inbox for a verification code or request a new one.',
+      );
+    }
+
     // Rate Limit Check (60 seconds) — prevents inbox flooding and Resend quota abuse
     if (user.lastOtpSentAt && (Date.now() - user.lastOtpSentAt.getTime() < 60000)) {
       // Return the same message to avoid timing attacks revealing account existence
       return { message: 'If an account exists with this email, a reset code has been sent.' };
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpCode = randomInt(100000, 1000000).toString();
     const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await this.prisma.user.update({
@@ -388,7 +414,7 @@ export class AuthService {
     }
 
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new BadRequestException('Invalid or expired reset code.');
 
     // 1. Check Expiry FIRST
     if (!user.otpCode || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
