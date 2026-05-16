@@ -86,7 +86,7 @@ export class MailService {
     title: string;
     body: string;
   }): string {
-    return \`<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -95,7 +95,7 @@ export class MailService {
   <title>Bica</title>
 </head>
 <body style="margin:0;padding:0;background:#F4F4F8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <span style="display:none;max-height:0;overflow:hidden;mso-hide:all;">\${opts.preheader}</span>
+  <span style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${opts.preheader}</span>
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#F4F4F8;padding:40px 16px;">
     <tr>
       <td align="center">
@@ -116,10 +116,10 @@ export class MailService {
           <tr>
             <td style="background:#FFFFFF;border-radius:20px;padding:40px 36px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
               <p style="margin:0 0 8px 0;font-size:22px;font-weight:800;color:#0A0A23;line-height:1.3;">
-                \${opts.title}
+                ${opts.title}
               </p>
               <p style="margin:0 0 32px 0;font-size:15px;color:#6B6B8A;line-height:1.6;white-space:pre-wrap;">
-                \${opts.body}
+                ${opts.body}
               </p>
               <hr style="border:none;border-top:1px solid #EDEDF5;margin:0 0 24px 0;" />
               <p style="margin:0;font-size:12px;color:#9B9BB8;line-height:1.6;text-align:center;">
@@ -130,7 +130,7 @@ export class MailService {
           <tr>
             <td align="center" style="padding-top:24px;">
               <p style="margin:0;font-size:12px;color:#9B9BB8;">
-                &copy; \${new Date().getFullYear()} Bica Drive. All rights reserved.
+                &copy; ${new Date().getFullYear()} Bica Drive. All rights reserved.
               </p>
             </td>
           </tr>
@@ -139,7 +139,7 @@ export class MailService {
     </tr>
   </table>
 </body>
-</html>\`;
+</html>`;
   }
 
   private async sendNotificationMail(to: string, subject: string, html: string) {
@@ -153,15 +153,15 @@ export class MailService {
         });
 
         if (error) {
-          this.logger.error(\`Resend Error: \${error.message}\`);
+          this.logger.error(`Resend Error: ${error.message}`);
         } else {
-          this.logger.log(\`✅ Notification email sent to \${to}. ID: \${data?.id}\`);
+          this.logger.log(`✅ Notification email sent to ${to}. ID: ${data?.id}`);
         }
       } catch (err) {
-        this.logger.error(\`Failed to send email: \${err.message}\`);
+        this.logger.error(`Failed to send email: ${err.message}`);
       }
     } else {
-      this.logger.log(\`[DEV MODE] Notification to \${to} → \${subject}\`);
+      this.logger.log(`[DEV MODE] Notification to ${to} → ${subject}`);
     }
   }
 
