@@ -5,6 +5,7 @@ import { Resend } from 'resend';
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private resend: Resend | null = null;
+  private readonly fromEmail: string;
 
   constructor() {
     const apiKey = process.env.RESEND_API_KEY;
@@ -13,6 +14,7 @@ export class MailService {
     } else {
       this.logger.warn('RESEND_API_KEY is not defined. Emails will be logged to console instead.');
     }
+    this.fromEmail = process.env.MAIL_FROM || 'Bica <no-reply@support.bicadriver.com>';
   }
 
   async sendVerificationOtp(email: string, name: string, otp: string) {
@@ -146,7 +148,7 @@ export class MailService {
     if (this.resend) {
       try {
         const { data, error } = await this.resend.emails.send({
-          from: 'Bica <onboarding@resend.dev>',
+          from: this.fromEmail,
           to,
           subject,
           html,
@@ -286,7 +288,7 @@ export class MailService {
     }
 
     const { data, error } = await this.resend.emails.send({
-      from: 'Bica <notifications@bicadriver.com>',
+      from: this.fromEmail,
       to,
       subject,
       html,
