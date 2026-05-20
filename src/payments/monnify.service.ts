@@ -156,11 +156,25 @@ export class MonnifyService {
       },
     ];
 
-    const result = await this.request<MonnifySubAccount[]>(
-      'post',
-      '/api/v1/sub-accounts',
-      payload,
-    );
+    let result: MonnifySubAccount[];
+    try {
+      result = await this.request<MonnifySubAccount[]>(
+        'post',
+        '/api/v1/sub-accounts',
+        payload,
+      );
+    } catch (error) {
+      this.logger.warn(`First attempt to create sub-account for ${driver.name} failed (likely NIBSS timeout). Retrying in 3 seconds...`);
+      // Wait for 3 seconds to allow downstream caching
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      
+      // Second attempt
+      result = await this.request<MonnifySubAccount[]>(
+        'post',
+        '/api/v1/sub-accounts',
+        payload,
+      );
+    }
 
     const subAccount = result[0];
     this.logger.log(

@@ -31,6 +31,11 @@ export class AdminController {
     return this.adminService.getTrips(pagination);
   }
 
+  @Get('drivers/pending')
+  getPendingDrivers() {
+    return this.adminService.getPendingDrivers();
+  }
+
   @Get('payouts')
   getPayouts(@Query() pagination: PaginationDto) {
     return this.adminService.getPayouts(pagination);

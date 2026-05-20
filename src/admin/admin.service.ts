@@ -92,6 +92,14 @@ export class AdminService {
     };
   }
 
+  async getPendingDrivers() {
+    const pendingDrivers = await this.prisma.user.findMany({
+      where: { role: 'DRIVER', approvalStatus: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
+    });
+    return pendingDrivers.map(u => this.mapAdminUser(u));
+  }
+
   async getUsers(pagination: PaginationDto) {
     const where = {
       role: { in: ['DRIVER', 'OWNER'] as any[] },
