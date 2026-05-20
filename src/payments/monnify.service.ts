@@ -281,6 +281,47 @@ export class MonnifyService {
     };
   }
 
+  async listRecentTransactions(params: {
+    page?: number;
+    size?: number;
+    from?: string;
+    to?: string;
+  } = {}): Promise<{
+    content: Array<{
+      transactionReference: string;
+      paymentReference: string;
+      paymentStatus: string;
+      amount: number;
+      createdOn: string;
+      customerEmail: string;
+      customerName: string;
+    }>;
+    totalElements: number;
+  }> {
+    const contractCode = this.config.get<string>('MONNIFY_CONTRACT_CODE');
+
+    return this.request<{
+      content: Array<{
+        transactionReference: string;
+        paymentReference: string;
+        paymentStatus: string;
+        amount: number;
+        createdOn: string;
+        customerEmail: string;
+        customerName: string;
+      }>;
+      totalElements: number;
+    }>('get', '/api/v1/transactions/search', undefined, {
+      params: {
+        contractCode,
+        page: params.page ?? 0,
+        size: params.size ?? 50,
+        ...(params.from ? { from: params.from } : {}),
+        ...(params.to ? { to: params.to } : {}),
+      },
+    });
+  }
+
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const secretKey = this.config.get<string>('MONNIFY_SECRET_KEY');
     const computed = sha512.hmac(secretKey!, rawBody);

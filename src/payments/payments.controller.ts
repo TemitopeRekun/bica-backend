@@ -147,4 +147,35 @@ export class PaymentsController {
   resetWallets(@CurrentUser() user: any) {
     return this.paymentsService.resetWallets(user.sub);
   }
+
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('orphaned-transactions')
+  getOrphanedTransactions(
+    @Query('page') page?: string,
+    @Query('size') size?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.paymentsService.getOrphanedTransactions({
+      page: page !== undefined ? parseInt(page, 10) : undefined,
+      size: size !== undefined ? parseInt(size, 10) : undefined,
+      from,
+      to,
+    });
+  }
+
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Post('recover/:transactionReference')
+  recoverTransaction(
+    @Param('transactionReference') transactionReference: string,
+    @Body('tripId') tripId: string,
+    @CurrentUser() user: any,
+  ) {
+    if (!tripId) {
+      throw new BadRequestException('tripId is required in the request body');
+    }
+    return this.paymentsService.recoverTransaction(transactionReference, tripId, user.sub);
+  }
 }
