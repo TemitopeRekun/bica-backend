@@ -24,12 +24,16 @@ import { PaginationDto } from '../common/dto/pagination.dto';
 import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
+import { MonnifyService } from './monnify.service';
 
 @Controller('payments')
 export class PaymentsController {
   private readonly logger = new Logger(PaymentsController.name);
 
-  constructor(private paymentsService: PaymentsService) {}
+  constructor(
+    private paymentsService: PaymentsService,
+    private monnifyService: MonnifyService,
+  ) {}
 
   @Get('banks')
   getBanks() {
@@ -177,5 +181,14 @@ export class PaymentsController {
       throw new BadRequestException('tripId is required in the request body');
     }
     return this.paymentsService.recoverTransaction(transactionReference, tripId, user.sub);
+  }
+
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('transaction-details/:transactionReference')
+  getTransactionDetails(
+    @Param('transactionReference') transactionReference: string,
+  ) {
+    return this.monnifyService.getTransactionDetails(transactionReference);
   }
 }
