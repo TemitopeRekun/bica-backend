@@ -228,6 +228,21 @@ export class MonnifyService {
     // We strip hyphens to keep the length well under Monnify's 50-character limit.
     const paymentReference = `BICA-${params.tripId.replace(/-/g, '')}-${Date.now().toString(36)}`;
 
+    const incomeSplitConfig = [
+      {
+        subAccountCode: params.driverSubAccountCode,
+        feePercentage: 0,
+        splitPercentage: params.driverSplitPercent,
+        feeBearer: false,
+      },
+    ];
+
+    this.logger.log(
+      `[INITIATE_TX] Preparing Monnify transaction | tripId=${params.tripId} | amount=${params.amount} | ` +
+      `driverSubAccountCode=${params.driverSubAccountCode} | driverSplitPercent=${params.driverSplitPercent}% | ` +
+      `incomeSplitConfig=${JSON.stringify(incomeSplitConfig)}`,
+    );
+
     const payload = {
       amount: params.amount,
       customerName: params.ownerName,
@@ -238,14 +253,7 @@ export class MonnifyService {
       contractCode,
       redirectUrl: this.config.get<string>('MONNIFY_REDIRECT_URL') ?? 'https://app.bicadriver.ng/payment/complete',
       paymentMethods: ['ACCOUNT_TRANSFER', 'CARD'],
-      incomeSplitConfig: [
-        {
-          subAccountCode: params.driverSubAccountCode,
-          feePercentage: 0,
-          splitPercentage: params.driverSplitPercent,
-          feeBearer: false,
-        },
-      ],
+      incomeSplitConfig,
     };
 
     const result = await this.request<{
@@ -320,6 +328,58 @@ export class MonnifyService {
         ...(params.to ? { to: params.to } : {}),
       },
     });
+  }
+
+  async getTransactionDetails(transactionReference: string): Promise<{
+    transactionReference: string;
+    paymentReference: string;
+    paymentStatus: string;
+    amountPaid: number;
+    totalPayable: number;
+    paymentMethod: string;
+    createdOn: string;
+    paidOn: string | null;
+    customerEmail: string;
+    customerName: string;
+    incomeSplitConfig: Array<{
+      subAccountCode: string;
+      splitPercentage: number;
+      feePercentage: number;
+      feeBearer: boolean;
+    }> | null;
+    settlementDetails: unknown;
+  }> {
+    this.logger.log(
+      `[TX_DETAILS] Fetching Monnify transaction details | transactionReference=${transactionReference}`,
+    );
+
+    const result = await this.request<any>(
+      'get',
+      `/api/v2/transactions/${encodeURIComponent(transactionReference)}`,
+    );
+
+    this.logger.log(
+      `[TX_DETAILS] Monnify response for ${transactionReference}: ` +
+      `status=${result.paymentStatus} | amountPaid=${result.amountPaid} | ` +
+      `paymentMethod=${result.paymentMethod} | ` +
+      `incomeSplitConfig=${JSON.stringify(result.incomeSplitConfig ?? null)} | ` +
+      `settlementDetails=${JSON.stringify(result.settlementDetails ?? null)}`,
+    );
+
+    return {
+      transactionReference: result.transactionReference,
+      paymentReference: result.paymentReference,
+      paymentStatus: result.paymentStatus,
+      amountPaid: result.amountPaid,
+      totalPayable: result.totalPayable,
+      paymentMethod: result.paymentMethod,
+      createdOn: result.createdOn,
+      paidOn: result.paidOn ?? null,
+      customerEmail: result.customerEmail,
+      customerName: result.customerName,
+      incomeSplitConfig: result.incomeSplitConfig ?? null,
+      settlementDetails: result.settlementDetails ?? null,
+    };
   }
 
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
