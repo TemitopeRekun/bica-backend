@@ -377,38 +377,68 @@ export class PaymentsService {
         driverSplitPercent,
       });
 
-    await this.prisma.$transaction(async (tx) => {
-      // Re-verify status inside transaction
-      const currentTrip = await tx.trip.findUnique({
-        where: { id: tripId },
-        select: { paymentStatus: true },
-      });
+    // Log immediately after Monnify succeeds — before any DB write.
+    // If the DB step below fails, this log is the recovery breadcrumb.
+    this.logger.log(
+      `[PAYMENT_INIT] Monnify transaction created | tripId=${trip.id} | amount=${trip.amount} | txRef=${transactionReference} | payRef=${paymentReference} | at=${new Date().toISOString()}`,
+    );
 
-      if (currentTrip?.paymentStatus === 'PAID') {
-        throw new BadRequestException('This trip has already been paid for');
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // Re-verify status inside transaction
+        const currentTrip = await tx.trip.findUnique({
+          where: { id: tripId },
+          select: { paymentStatus: true },
+        });
+
+        if (currentTrip?.paymentStatus === 'PAID') {
+          throw new BadRequestException('This trip has already been paid for');
+        }
+
+        await tx.trip.update({
+          where: { id: tripId },
+          data: {
+            paymentStatus: 'PENDING',
+            monnifyTxRef: transactionReference,
+            paymentReference,
+          },
+        });
+
+        // Audit log for payment initiation
+        await tx.auditLog.create({
+          data: {
+            userId: requestingUserId,
+            action: 'PAYMENT_INITIATED',
+            entity: 'TRIP',
+            entityId: tripId,
+            newValue: { transactionReference, paymentReference, amount: trip.amount },
+            metadata: { provider: 'monnify' },
+          },
+        });
+      });
+    } catch (dbError) {
+      const errorMessage = dbError instanceof Error ? dbError.message : 'Unknown DB error';
+      const errorStack = dbError instanceof Error ? dbError.stack : undefined;
+
+      // CRITICAL: Monnify already created this transaction. Log everything needed
+      // for manual recovery via POST /payments/recover/:transactionReference.
+      this.logger.error(
+        `[PAYMENT_INIT] ORPHANED TRANSACTION — Monnify transaction was created but DB save failed. ` +
+        `tripId=${trip.id} | txRef=${transactionReference} | payRef=${paymentReference} | ` +
+        `amount=${trip.amount} | ownerId=${requestingUserId} | error=${errorMessage}`,
+        errorStack,
+      );
+
+      // Re-throw BadRequestException as-is (e.g. "already paid" race condition)
+      if (dbError instanceof BadRequestException) {
+        throw dbError;
       }
 
-      await tx.trip.update({
-        where: { id: tripId },
-        data: {
-          paymentStatus: 'PENDING',
-          monnifyTxRef: transactionReference,
-          paymentReference,
-        },
-      });
-
-      // Audit log for payment initiation
-      await tx.auditLog.create({
-        data: {
-          userId: requestingUserId,
-          action: 'PAYMENT_INITIATED',
-          entity: 'TRIP',
-          entityId: tripId,
-          newValue: { transactionReference, paymentReference, amount: trip.amount },
-          metadata: { provider: 'monnify' },
-        },
-      });
-    });
+      throw new BadGatewayException(
+        `Payment was created with Monnify (ref: ${transactionReference}) but could not be saved to the database. ` +
+        `Please contact support with this reference to complete your payment.`,
+      );
+    }
 
     const response = {
       checkoutUrl,
@@ -437,6 +467,133 @@ export class PaymentsService {
     });
 
     return response;
+  }
+
+  async getOrphanedTransactions(params: { page?: number; size?: number; from?: string; to?: string } = {}) {
+    this.logger.log(`[ORPHAN_CHECK] Fetching recent Monnify transactions for orphan detection | page=${params.page ?? 0} | size=${params.size ?? 50}`);
+
+    const monnifyResult = await this.monnify.listRecentTransactions(params);
+    const monnifyRefs = monnifyResult.content.map((t) => t.transactionReference);
+
+    if (monnifyRefs.length === 0) {
+      return { orphaned: [], total: 0, checkedAt: new Date().toISOString() };
+    }
+
+    // Find which of these references already exist in our DB
+    const knownTrips = await this.prisma.trip.findMany({
+      where: { monnifyTxRef: { in: monnifyRefs } },
+      select: { monnifyTxRef: true, id: true, paymentStatus: true },
+    });
+
+    const knownRefs = new Set(knownTrips.map((t) => t.monnifyTxRef).filter(Boolean));
+
+    const orphaned = monnifyResult.content
+      .filter((t) => !knownRefs.has(t.transactionReference))
+      .map((t) => ({
+        transactionReference: t.transactionReference,
+        paymentReference: t.paymentReference,
+        paymentStatus: t.paymentStatus,
+        amount: t.amount,
+        createdOn: t.createdOn,
+        customerEmail: t.customerEmail,
+        customerName: t.customerName,
+      }));
+
+    this.logger.log(
+      `[ORPHAN_CHECK] Checked ${monnifyRefs.length} Monnify transactions — found ${orphaned.length} orphaned (no DB record)`,
+    );
+
+    return {
+      orphaned,
+      total: orphaned.length,
+      checkedAt: new Date().toISOString(),
+      monnifyTotal: monnifyResult.totalElements,
+    };
+  }
+
+  async recoverTransaction(transactionReference: string, tripId: string, adminId: string) {
+    this.logger.log(
+      `[RECOVERY] Admin ${adminId} attempting to recover txRef=${transactionReference} for tripId=${tripId}`,
+    );
+
+    // 1. Verify the transaction exists on Monnify
+    let monnifyVerification: { status: string; amountPaid: number; paymentMethod: string };
+    try {
+      monnifyVerification = await this.monnify.verifyTransaction(transactionReference);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`[RECOVERY] Monnify verification failed for txRef=${transactionReference}: ${message}`);
+      throw new BadGatewayException(
+        `Could not verify transaction ${transactionReference} with Monnify: ${message}`,
+      );
+    }
+
+    // 2. Verify the trip exists and is in a recoverable state
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      select: { id: true, paymentStatus: true, monnifyTxRef: true, amount: true, ownerId: true, driverId: true },
+    });
+
+    if (!trip) {
+      throw new NotFoundException(`Trip ${tripId} not found`);
+    }
+
+    if (trip.paymentStatus === 'PAID') {
+      throw new BadRequestException(`Trip ${tripId} is already marked as PAID`);
+    }
+
+    if (trip.monnifyTxRef && trip.monnifyTxRef !== transactionReference) {
+      throw new BadRequestException(
+        `Trip ${tripId} already has a different transaction reference (${trip.monnifyTxRef}). ` +
+        `Cannot overwrite with ${transactionReference}.`,
+      );
+    }
+
+    const isSuccessful = MONNIFY_SUCCESS_STATUSES.includes(monnifyVerification.status?.toUpperCase());
+
+    // 3. Save the reference and update payment status
+    await this.prisma.$transaction(async (tx) => {
+      await tx.trip.update({
+        where: { id: tripId },
+        data: {
+          monnifyTxRef: transactionReference,
+          paymentStatus: isSuccessful ? 'PAID' : 'PENDING',
+          ...(isSuccessful ? { paidAt: new Date() } : {}),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId: adminId,
+          action: 'PAYMENT_RECOVERED',
+          entity: 'TRIP',
+          entityId: tripId,
+          newValue: {
+            transactionReference,
+            monnifyStatus: monnifyVerification.status,
+            amountPaid: monnifyVerification.amountPaid,
+          },
+          metadata: { provider: 'monnify', recoveredBy: adminId },
+        },
+      });
+    });
+
+    this.logger.log(
+      `[RECOVERY] Successfully linked txRef=${transactionReference} to tripId=${tripId} | ` +
+      `monnifyStatus=${monnifyVerification.status} | amountPaid=${monnifyVerification.amountPaid}`,
+    );
+
+    return {
+      tripId,
+      transactionReference,
+      monnifyStatus: monnifyVerification.status,
+      amountPaid: monnifyVerification.amountPaid,
+      paymentMethod: monnifyVerification.paymentMethod,
+      tripPaymentStatus: isSuccessful ? 'PAID' : 'PENDING',
+      message: isSuccessful
+        ? 'Transaction recovered and trip marked as PAID. Run finalization if wallet credit is also needed.'
+        : `Transaction linked. Monnify status is ${monnifyVerification.status} — trip set to PENDING.`,
+    };
   }
 
   async getPaymentStatus(
