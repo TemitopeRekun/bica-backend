@@ -8,6 +8,7 @@ import {
   UnprocessableEntityException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PaymentStatus, UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -346,6 +347,39 @@ export class PaymentsService {
       throw new BadRequestException('This trip has already been paid for');
     }
 
+    // Guard: verify existing pending ref before allowing a new payment initiation.
+    // Prevents multiple active transactions for the same trip from accumulating on Monnify.
+    if (trip.monnifyTxRef && trip.paymentStatus === 'PENDING') {
+      try {
+        const existing = await this.monnify.verifyTransaction(trip.monnifyTxRef);
+        if (MONNIFY_SUCCESS_STATUSES.includes(existing.status?.toUpperCase())) {
+          // Payment already completed on Monnify but webhook/DB didn't update — auto-resolve
+          await this.prisma.trip.update({
+            where: { id: tripId },
+            data: { paymentStatus: 'PAID', paidAt: new Date() },
+          });
+          throw new BadRequestException('This trip has already been paid for');
+        }
+        if (existing.status === 'PENDING') {
+          const ageMs = Date.now() - new Date(trip.updatedAt).getTime();
+          const thirtyMins = 30 * 60 * 1000;
+          if (ageMs < thirtyMins) {
+            const minsLeft = Math.ceil((thirtyMins - ageMs) / 60000);
+            throw new BadRequestException(
+              `A payment is already in progress for this trip (ref: ${trip.monnifyTxRef}). ` +
+              `Please complete it or wait ~${minsLeft} minute(s) before retrying.`,
+            );
+          }
+        }
+        // EXPIRED, FAILED, or stale PENDING (>30 min) — allow re-initiation
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+        this.logger.warn(
+          `[PAYMENT_INIT] Could not verify existing ref ${trip.monnifyTxRef}: ${(err as Error).message}. Allowing re-initiation.`,
+        );
+      }
+    }
+
     const driverSubAccountCode =
       trip.driver?.monnifySubAccountCode ??
       (trip.driverId
@@ -531,7 +565,11 @@ export class PaymentsService {
     // 2. Verify the trip exists and is in a recoverable state
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
-      select: { id: true, paymentStatus: true, monnifyTxRef: true, amount: true, ownerId: true, driverId: true },
+      select: {
+        id: true, paymentStatus: true, monnifyTxRef: true, amount: true,
+        ownerId: true, driverId: true, driverEarnings: true, commissionAmount: true,
+        driver: { select: { id: true, name: true } },
+      },
     });
 
     if (!trip) {
@@ -583,6 +621,14 @@ export class PaymentsService {
       `monnifyStatus=${monnifyVerification.status} | amountPaid=${monnifyVerification.amountPaid}`,
     );
 
+    if (isSuccessful) {
+      await this.settleRecoveredTrip(
+        { ...trip, monnifyTxRef: transactionReference },
+        monnifyVerification.amountPaid,
+        monnifyVerification.paymentMethod,
+      );
+    }
+
     return {
       tripId,
       transactionReference,
@@ -591,9 +637,134 @@ export class PaymentsService {
       paymentMethod: monnifyVerification.paymentMethod,
       tripPaymentStatus: isSuccessful ? 'PAID' : 'PENDING',
       message: isSuccessful
-        ? 'Transaction recovered and trip marked as PAID. Run finalization if wallet credit is also needed.'
+        ? 'Transaction recovered, trip marked as PAID, and driver wallet credited.'
         : `Transaction linked. Monnify status is ${monnifyVerification.status} — trip set to PENDING.`,
     };
+  }
+
+  async finalizeRecoveredTripById(tripId: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      select: {
+        id: true, paymentStatus: true, monnifyTxRef: true, amount: true,
+        ownerId: true, driverId: true, driverEarnings: true, commissionAmount: true,
+        driver: { select: { id: true, name: true } },
+      },
+    });
+    if (!trip) throw new NotFoundException(`Trip ${tripId} not found`);
+    if (trip.paymentStatus !== 'PAID') throw new BadRequestException(`Trip ${tripId} is not PAID — cannot finalize`);
+    if (!trip.monnifyTxRef) throw new BadRequestException(`Trip ${tripId} has no monnifyTxRef`);
+
+    const verification = await this.monnify.verifyTransaction(trip.monnifyTxRef);
+    return this.settleRecoveredTrip(trip, verification.amountPaid, verification.paymentMethod);
+  }
+
+  // Handles wallet credit and PaymentRecord creation for a trip that was already
+  // marked PAID via recoverTransaction or a direct DB update. Safe to call multiple
+  // times — idempotent via the PaymentRecord unique constraint on monnifyTxRef.
+  async settleRecoveredTrip(trip: any, amountPaid: number, paymentMethod: string) {
+    const txRef = trip.monnifyTxRef;
+    const existing = await this.prisma.paymentRecord.findUnique({ where: { monnifyTxRef: txRef } });
+    if (existing) {
+      this.logger.log(`[SETTLE] PaymentRecord already exists for txRef=${txRef} — skipping duplicate settlement`);
+      return { alreadySettled: true };
+    }
+
+    const totalAmount = parseFloat(String(amountPaid));
+    const driverAmount = parseFloat(String(trip.driverEarnings));
+    const platformAmount = parseFloat(String(trip.commissionAmount));
+    const paidAt = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentRecord.create({
+        data: {
+          tripId: trip.id,
+          totalAmount,
+          driverAmount,
+          platformAmount,
+          monnifyTxRef: txRef,
+          paymentMethod,
+          paidAt,
+          webhookPayload: {},
+        },
+      });
+
+      if (trip.driverId) {
+        await tx.user.update({
+          where: { id: trip.driverId },
+          data: { walletBalance: { increment: trip.driverEarnings } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            userId: trip.driverId,
+            action: 'WALLET_INCREMENT',
+            entity: 'USER',
+            entityId: trip.driverId,
+            oldValue: { txRef },
+            newValue: { amount: trip.driverEarnings, type: 'CR' },
+            metadata: { tripId: trip.id, provider: 'monnify', amountPaid, source: 'recovery' },
+          },
+        });
+      }
+    });
+
+    this.logger.log(`[SETTLE] Recovery settlement done for trip ${trip.id} — driver credited ₦${driverAmount}`);
+
+    if (trip.driverId) {
+      this.ridesGateway.notifyDriverPaymentUpdated(trip.driverId, {
+        tripId: trip.id,
+        paymentStatus: 'PAID',
+        paidAt: paidAt.toISOString(),
+        amount: totalAmount,
+        message: 'Payment received successfully.',
+        postTripAction: 'CLEARED',
+      });
+      this.fcmService.sendToUser(trip.driverId, {
+        title: 'Payment Received! 💰',
+        body: `You have received a payment of NGN ${totalAmount.toLocaleString()} for your last trip.`,
+        data: { tripId: trip.id, type: 'payment_received' },
+      }).catch(e => this.logger.error(`FCM Push Error: ${e.message}`));
+    }
+
+    return { alreadySettled: false, driverCredited: driverAmount };
+  }
+
+  // Runs every 15 minutes. Finds PENDING trips whose last payment init was >15 mins ago
+  // and resolves them against Monnify — catches any webhooks that were missed or dropped.
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async reconcilePendingTrips() {
+    const cutoff = new Date(Date.now() - 15 * 60 * 1000);
+    const pendingTrips = await this.prisma.trip.findMany({
+      where: {
+        paymentStatus: 'PENDING',
+        monnifyTxRef: { not: null },
+        updatedAt: { lt: cutoff },
+      },
+      include: { driver: { select: { id: true, name: true } } },
+    });
+
+    if (pendingTrips.length === 0) return;
+
+    this.logger.log(`[RECONCILE] Checking ${pendingTrips.length} stale PENDING trip(s)`);
+
+    for (const trip of pendingTrips) {
+      try {
+        const verification = await this.monnify.verifyTransaction(trip.monnifyTxRef!);
+        if (MONNIFY_SUCCESS_STATUSES.includes(verification.status?.toUpperCase())) {
+          this.logger.log(`[RECONCILE] Auto-finalizing trip ${trip.id} — Monnify status: ${verification.status}`);
+          await this.finalizePayment(trip, verification.amountPaid, verification.paymentMethod, null);
+        } else if (verification.status === 'EXPIRED' || verification.status === 'FAILED') {
+          await this.prisma.trip.update({
+            where: { id: trip.id },
+            data: { paymentStatus: 'FAILED' },
+          });
+          this.logger.log(`[RECONCILE] Marked trip ${trip.id} as FAILED — Monnify status: ${verification.status}`);
+        }
+      } catch (err) {
+        this.logger.warn(`[RECONCILE] Could not reconcile trip ${trip.id}: ${(err as Error).message}`);
+      }
+    }
   }
 
   async getPaymentStatus(
@@ -704,7 +875,7 @@ export class PaymentsService {
     const eventData = payload.eventData;
     const txRef = eventData.transactionReference;
 
-    const trip = await this.prisma.trip.findFirst({
+    let trip = await this.prisma.trip.findFirst({
       where: { monnifyTxRef: txRef },
       include: {
         driver: {
@@ -712,6 +883,32 @@ export class PaymentsService {
         },
       },
     });
+
+    if (!trip) {
+      // Fallback: user may have re-initiated payment after this txRef was created,
+      // overwriting monnifyTxRef in the DB. Recover via paymentReference which encodes the tripId.
+      const payRef = eventData.paymentReference as string | undefined;
+      const match = payRef?.match(/^BICA-([0-9a-f]{32})-/i);
+      if (match) {
+        const raw = match[1];
+        const tripId = `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
+        const found = await this.prisma.trip.findUnique({
+          where: { id: tripId },
+          include: { driver: { select: { id: true, name: true } } },
+        });
+        if (found && found.paymentStatus !== 'PAID') {
+          this.logger.warn(
+            `[WEBHOOK] txRef ${txRef} not found by monnifyTxRef — recovered trip ${tripId} via paymentReference ${payRef}. ` +
+            `Likely caused by a re-initiated payment overwriting the DB ref. Correcting and finalizing.`,
+          );
+          await this.prisma.trip.update({
+            where: { id: tripId },
+            data: { monnifyTxRef: txRef },
+          });
+          trip = { ...found, monnifyTxRef: txRef };
+        }
+      }
+    }
 
     if (!trip) {
       this.logger.warn(`Webhook received for unknown transaction: ${txRef}`);

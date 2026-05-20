@@ -167,6 +167,15 @@ export class PaymentsController {
 
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @Post('finalize/:tripId')
+  finalizeRecoveredTrip(
+    @Param('tripId') tripId: string,
+  ) {
+    return this.paymentsService.finalizeRecoveredTripById(tripId);
+  }
+
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @Post('recover/:transactionReference')
   recoverTransaction(
     @Param('transactionReference') transactionReference: string,

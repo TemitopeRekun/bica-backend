@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { MonnifyService } from './monnify.service';
@@ -8,7 +9,7 @@ import { RidesModule } from '../rides/rides.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [forwardRef(() => AuthModule), AdminRealtimeModule, RidesModule, NotificationsModule],
+  imports: [ScheduleModule.forRoot(), forwardRef(() => AuthModule), AdminRealtimeModule, RidesModule, NotificationsModule],
   controllers: [PaymentsController],
   providers: [PaymentsService, MonnifyService],
   exports: [PaymentsService, MonnifyService],
