@@ -463,9 +463,9 @@ export class AuthService {
     return this.jwt.signAsync(payload);
   }
 
-  // Removes passwordHash before sending user data to frontend
+  // Removes passwordHash and sensitive identity fields before sending user data to frontend
   private sanitizeUser(user: any) {
-    const { passwordHash, otpCode, otpExpiresAt, otpAttempts, lastOtpSentAt, ...rest } = user;
+    const { passwordHash, otpCode, otpExpiresAt, otpAttempts, lastOtpSentAt, nin, ...rest } = user;
     return rest;
   }
 }

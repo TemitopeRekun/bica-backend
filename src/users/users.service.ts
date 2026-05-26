@@ -14,6 +14,7 @@ import { UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
+import { maskNin } from '../common/utils/mask.util';
 
 @Injectable()
 export class UsersService {
@@ -28,7 +29,7 @@ export class UsersService {
 
   // Get all users — admin only, with optional role filter
   async findAll(role?: UserRole) {
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where: role ? { role } : undefined,
       select: {
         id: true,
@@ -60,6 +61,11 @@ export class UsersService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return users.map(u => ({
+      ...u,
+      nin: maskNin(u.nin),
+    }));
   }
 
   // Get a single user by ID (User Dossier)
@@ -108,6 +114,8 @@ export class UsersService {
 
     return {
       ...user,
+      // Mask NIN according to NDPR compliance policy
+      nin: maskNin(user.nin),
       // Derived flags the frontend uses to drive the Approve button and Retry logic
       subAccountActive: !!user.monnifySubAccountCode,
       canRetrySubAccountSetup:

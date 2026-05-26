@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AdminRealtimeGateway } from './admin-realtime.gateway';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { PaymentsService } from '../payments/payments.service';
+import { maskNin } from '../common/utils/mask.util';
 
 @Injectable()
 export class AdminService {
@@ -257,6 +258,7 @@ export class AdminService {
   private mapAdminUser(user: any) {
     return {
       ...user,
+      nin: maskNin(user.nin),
       subAccountActive: !!user.monnifySubAccountCode,
       canRetrySubAccountSetup:
         !user.monnifySubAccountCode && !!user.bankCode && !!user.accountNumber,

@@ -9,6 +9,7 @@ import {
   IsNotIn,
 } from 'class-validator';
 import { UserRole } from '@prisma/client';
+import { SanitizeText } from '../../common/utils/sanitize.util';
 
 /**
  * Monnify does NOT support split payments/sub-accounts for these
@@ -30,6 +31,7 @@ const UNSUPPORTED_BANK_CODES = [
 export class RegisterDto {
   @IsString()
   @IsNotEmpty()
+  @SanitizeText()
   name: string;
 
   @IsEmail()
@@ -53,10 +55,12 @@ export class RegisterDto {
   // Owner fields
   @IsOptional()
   @IsString()
+  @SanitizeText()
   carType?: string;
 
   @IsOptional()
   @IsString()
+  @SanitizeText()
   carModel?: string;
 
   @IsOptional()
@@ -69,10 +73,12 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
+  @SanitizeText()
   address?: string;
 
   @IsOptional()
   @IsString()
+  @SanitizeText()
   nationality?: string;
 
   @IsOptional()
@@ -120,6 +126,7 @@ export class RegisterDto {
   // Bank details - required for drivers
   @IsOptional()
   @IsString()
+  @SanitizeText()
   bankName?: string;
 
   @IsOptional()
@@ -136,5 +143,6 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
+  @SanitizeText()
   accountName?: string;
 }
