@@ -10,11 +10,14 @@ import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UpdateOnlineStatusDto } from './dto/update-online-status.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { maskNin } from '../common/utils/mask.util';
+import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class UsersService {
@@ -482,6 +485,75 @@ export class UsersService {
         transmission: driver.transmission,
         activeTrips: driver.tripsAsDriver,
       },
+    };
+  }
+
+  /**
+   * 🛡️ Soft-delete and anonymize user account (V1 NDPR compliance)
+   * Requires password confirmation for security.
+   * Preserves referential integrity: trips, payouts, ratings remain intact.
+   */
+  async deleteAccount(userId: string, dto: DeleteAccountDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Verify password before deletion
+    const passwordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    if (!passwordValid) {
+      // Return generic error to prevent user enumeration
+      throw new ForbiddenException('Invalid credentials');
+    }
+
+    // Generate unique anonymized values using randomUUID
+    const uuid = randomUUID();
+    const anonymizedEmail = `deleted_${uuid}@deleted.bicadriver.com`;
+    const anonymizedPhone = `deleted_${uuid}`;
+
+    // Soft-delete with PII anonymization
+    const deletedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        // Deletion marker
+        deletedAt: new Date(),
+        
+        // Access revocation
+        isBlocked: true,
+        isOnline: false,
+        
+        // Clear live state
+        fcmToken: null,
+        locationLat: null,
+        locationLng: null,
+        
+        // Anonymize PII
+        name: 'Deleted User',
+        email: anonymizedEmail,
+        phone: anonymizedPhone,
+        avatarUrl: null,
+        selfieImageUrl: null,
+        nin: null,
+        ninImageUrl: null,
+        licenseImageUrl: null,
+        
+        // Clear bank/payment details
+        bankName: null,
+        bankCode: null,
+        accountNumber: null,
+        accountName: null,
+        monnifySubAccountCode: null,
+      },
+    });
+
+    this.logger.log(`✓ Account deletion completed for user ${userId}. Email anonymized to ${anonymizedEmail}`);
+
+    return {
+      message: 'Your account has been permanently deleted.',
+      success: true,
     };
   }
 }

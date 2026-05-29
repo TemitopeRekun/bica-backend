@@ -5,6 +5,7 @@ import { MonnifyService } from './monnify.service';
 import { ConfigService } from '@nestjs/config';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { RidesGateway } from '../rides/rides.gateway';
+import { FcmService } from '../notifications/fcm.service';
 import { UserRole } from '@prisma/client';
 
 describe('PaymentsService', () => {
@@ -56,6 +57,7 @@ describe('PaymentsService', () => {
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: AdminRealtimeGateway, useValue: mockAdminRealtime },
         { provide: RidesGateway, useValue: mockRides },
+        { provide: FcmService, useValue: { sendPushNotification: jest.fn() } },
       ],
     }).compile();
 

@@ -9,7 +9,7 @@ class TestDto {
 describe('sanitizeText', () => {
   it('should strip script tags and their content', () => {
     const input = 'Hello <script>alert("xss")</script> World';
-    const expected = 'Hello alert("xss") World';
+    const expected = 'Hello  World';
     expect(sanitizeText(input)).toBe(expected);
   });
 
@@ -36,6 +36,6 @@ describe('SanitizeText Decorator', () => {
   it('should sanitize HTML inside class-transformer validation pipeline', () => {
     const plain = { text: 'Hello <script>alert(1)</script> World' };
     const instance = plainToInstance(TestDto, plain);
-    expect(instance.text).toBe('Hello alert(1) World');
+    expect(instance.text).toBe('Hello  World');
   });
 });

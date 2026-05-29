@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Delete,
   Query,
   Req,
   UseGuards,
@@ -18,6 +19,7 @@ import { UpdateApprovalDto } from './dto/update-approval.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UpdateOnlineStatusDto } from './dto/update-online-status.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
@@ -136,5 +138,15 @@ export class UsersController {
     @Body() dto: UpdateFcmTokenDto,
   ) {
     return this.usersService.updateFcmToken(user.sub, dto);
+  }
+
+  // DELETE /users/me
+  // Soft-deletes an authenticated user's account with password confirmation
+  @Delete('me')
+  deleteAccount(
+    @CurrentUser() user: any,
+    @Body() dto: DeleteAccountDto,
+  ) {
+    return this.usersService.deleteAccount(user.sub, dto);
   }
 }

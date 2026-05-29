@@ -196,6 +196,7 @@ export class RidesService {
           distanceKm: dto.distanceKm,
           distanceComponent: fareDetails.distanceComponent,
           timeComponent: fareDetails.timeComponent,
+          commissionPercent: settings.commission as any,
           totalMins: dto.estimatedMins,
           isEstimate: true,
           pricingBranch: fareDetails.pricingBranch,
@@ -550,7 +551,8 @@ export class RidesService {
         timeComponent, 
         totalMins,
         isSnapshotUsed: true,
-        pricingBranch // Correctly extracted here
+        pricingBranch, // Correctly extracted here
+        commissionPercent: (trip as any).commissionPercent
       };
     }
 

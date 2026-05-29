@@ -14,28 +14,28 @@ export class MailService {
     } else {
       this.logger.warn('RESEND_API_KEY is not defined. Emails will be logged to console instead.');
     }
-    this.fromEmail = process.env.MAIL_FROM || 'Bica <no-reply@support.bicadriver.com>';
+    this.fromEmail = process.env.MAIL_FROM || 'BicaDriver <no-reply@support.bicadriver.com>';
   }
 
   async sendVerificationOtp(email: string, name: string, otp: string) {
-    const subject = 'Your Bica Verification Code';
+    const subject = 'Your BicaDriver Verification Code';
     const html = this.buildEmail({
-      preheader: `${otp} is your Bica verification code. It expires in 10 minutes.`,
-      title: `Welcome to Bica, ${name.split(' ')[0]}!`,
+      preheader: `${otp} is your BicaDriver verification code. It expires in 10 minutes.`,
+      title: `Welcome to BicaDriver, ${name.split(' ')[0]}!`,
       body: `You're almost there. Use the 6-digit code below to verify your email address and activate your account.`,
       otp,
-      footerNote: `If you didn't create a Bica account, you can safely ignore this email. Someone may have entered your address by mistake.`,
+      footerNote: `If you didn't create a BicaDriver account, you can safely ignore this email. Someone may have entered your address by mistake.`,
     });
 
     await this.sendMail(email, subject, html, otp);
   }
 
   async sendPasswordResetOtp(email: string, name: string, otp: string) {
-    const subject = 'Reset Your Bica Password';
+    const subject = 'Reset Your BicaDriver Password';
     const html = this.buildEmail({
-      preheader: `${otp} is your Bica password reset code. It expires in 10 minutes.`,
+      preheader: `${otp} is your BicaDriver password reset code. It expires in 10 minutes.`,
       title: `Password Reset Request`,
-      body: `Hi ${name.split(' ')[0]}, we received a request to reset the password for your Bica account. Use the code below to proceed. This code expires in <strong>10 minutes</strong>.`,
+      body: `Hi ${name.split(' ')[0]}, we received a request to reset the password for your BicaDriver account. Use the code below to proceed. This code expires in <strong>10 minutes</strong>.`,
       otp,
       footerNote: `If you didn't request a password reset, please ignore this email. Your password will remain unchanged. If you're concerned about your account security, contact our support team.`,
     });
@@ -94,7 +94,7 @@ export class MailService {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <title>Bica</title>
+  <title>BicaDriver</title>
 </head>
 <body style="margin:0;padding:0;background:#F4F4F8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
   <span style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${opts.preheader}</span>
@@ -108,7 +108,7 @@ export class MailService {
                 <tr>
                   <td style="background:#1A0533;border-radius:14px;padding:12px 24px;">
                     <span style="font-size:22px;font-weight:900;color:#FFFFFF;letter-spacing:-0.5px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-                      BICA<span style="color:#A78BFA;">.</span>
+                      BicaDriver
                     </span>
                   </td>
                 </tr>
@@ -132,7 +132,7 @@ export class MailService {
           <tr>
             <td align="center" style="padding-top:24px;">
               <p style="margin:0;font-size:12px;color:#9B9BB8;">
-                &copy; ${new Date().getFullYear()} Bica Drive. All rights reserved.
+                &copy; ${new Date().getFullYear()} BicaDriver. All rights reserved.
               </p>
             </td>
           </tr>
@@ -193,7 +193,7 @@ export class MailService {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <title>Bica</title>
+  <title>BicaDriver</title>
 </head>
 <body style="margin:0;padding:0;background:#F4F4F8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
   <!-- Preheader (hidden preview text) -->
@@ -211,7 +211,7 @@ export class MailService {
                 <tr>
                   <td style="background:#1A0533;border-radius:14px;padding:12px 24px;">
                     <span style="font-size:22px;font-weight:900;color:#FFFFFF;letter-spacing:-0.5px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-                      BICA<span style="color:#A78BFA;">.</span>
+                      BicaDriver
                     </span>
                   </td>
                 </tr>
@@ -265,7 +265,7 @@ export class MailService {
           <tr>
             <td align="center" style="padding-top:24px;">
               <p style="margin:0;font-size:12px;color:#9B9BB8;">
-                &copy; ${new Date().getFullYear()} Bica Drive. All rights reserved.
+                &copy; ${new Date().getFullYear()} BicaDriver. All rights reserved.
               </p>
               <p style="margin:4px 0 0 0;font-size:11px;color:#C4C4D4;">
                 This is an automated message — please do not reply to this email.

@@ -3,7 +3,7 @@ import { maskNin } from './mask.util';
 describe('maskNin', () => {
   it('should mask all but the last 4 characters of a standard NIN', () => {
     const input = '12345678901';
-    const expected = '*******7890';
+    const expected = '*******8901';
     expect(maskNin(input)).toBe(expected);
   });
 
@@ -19,7 +19,7 @@ describe('maskNin', () => {
 
   it('should trim surrounding whitespace before masking', () => {
     const input = '  12345678901  ';
-    const expected = '*******7890';
+    const expected = '*******8901';
     expect(maskNin(input)).toBe(expected);
   });
 });

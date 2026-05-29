@@ -5,6 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PaymentsService } from '../payments/payments.service';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
+import { MailService } from '../common/mail.service';
 import { UserRole, ApprovalStatus } from '@prisma/client';
 import { ForbiddenException, UnauthorizedException, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
@@ -37,6 +38,11 @@ describe('AuthService (Driver Approval Flow)', () => {
     uploadImage: jest.fn().mockResolvedValue('http://image.url'),
   };
 
+  const mockMailService = {
+    sendVerificationOtp: jest.fn(),
+    sendPasswordResetOtp: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -46,6 +52,7 @@ describe('AuthService (Driver Approval Flow)', () => {
         { provide: PaymentsService, useValue: mockPayments },
         { provide: AdminRealtimeGateway, useValue: mockAdminRealtime },
         { provide: CloudinaryService, useValue: mockCloudinary },
+        { provide: MailService, useValue: mockMailService },
       ],
     }).compile();
 
@@ -71,6 +78,7 @@ describe('AuthService (Driver Approval Flow)', () => {
       const result = await service.register({
         email: 'driver@test.com',
         password: 'password',
+        confirmPassword: 'password',
         name: 'Test Driver',
         phone: '1234567890',
         role: UserRole.DRIVER,
@@ -80,8 +88,8 @@ describe('AuthService (Driver Approval Flow)', () => {
         accountName: 'Test Driver',
       } as any);
 
-      expect(result.token).toBeUndefined();
-      expect(result.message).toContain('pending admin approval');
+      expect((result as any).token).toBeUndefined();
+      expect(result.message).toContain('Registration successful');
       expect(mockAdminRealtime.notifyPendingDriver).toHaveBeenCalled();
     });
 
@@ -98,13 +106,14 @@ describe('AuthService (Driver Approval Flow)', () => {
       const result = await service.register({
         email: 'owner@test.com',
         password: 'password',
+        confirmPassword: 'password',
         name: 'Test Owner',
         phone: '1234567890',
         role: UserRole.OWNER,
       } as any);
 
-      expect(result.token).toBe('test-token');
-      expect(result.message).toBeUndefined();
+      expect((result as any).token).toBeUndefined();
+      expect(result.message).toContain('Registration successful');
     });
   });
 
@@ -119,6 +128,7 @@ describe('AuthService (Driver Approval Flow)', () => {
         role: UserRole.DRIVER,
         approvalStatus: ApprovalStatus.PENDING,
         isBlocked: false,
+        isEmailVerified: true,
       });
 
       await expect(service.login({
@@ -135,6 +145,7 @@ describe('AuthService (Driver Approval Flow)', () => {
         role: UserRole.DRIVER,
         approvalStatus: ApprovalStatus.REJECTED,
         isBlocked: false,
+        isEmailVerified: true,
       });
 
       await expect(service.login({
@@ -151,6 +162,7 @@ describe('AuthService (Driver Approval Flow)', () => {
         role: UserRole.DRIVER,
         approvalStatus: ApprovalStatus.APPROVED,
         isBlocked: false,
+        isEmailVerified: true,
       });
 
       const result = await service.login({
@@ -168,6 +180,7 @@ describe('AuthService (Driver Approval Flow)', () => {
         passwordHash,
         role: UserRole.OWNER,
         isBlocked: true,
+        isEmailVerified: true,
       });
 
       await expect(service.login({

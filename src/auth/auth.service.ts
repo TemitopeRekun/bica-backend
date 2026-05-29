@@ -118,6 +118,14 @@ export class AuthService {
           `selfie_${driverId}`,
         );
       }
+
+      // Use the Cloudinary selfie URL as the default avatar so new drivers
+      // display their selfie as profile picture immediately after registration.
+      // Only applied when role is DRIVER and no other avatarUrl is available.
+      // Does not block future explicit avatar uploads via /users/avatar.
+      if (selfieImageUrl) {
+        (dto as any).avatarUrl = selfieImageUrl;
+      }
     }
 
     // 5. Generate OTP
@@ -145,6 +153,9 @@ export class AuthService {
         licenseImageUrl,
         ninImageUrl,
         selfieImageUrl,
+        // avatarUrl is set from selfieImageUrl for DRIVER registrations (see block above).
+        // For OWNER/ADMIN this will be undefined and the column stays null.
+        avatarUrl: (dto as any).avatarUrl ?? undefined,
         backgroundCheckAccepted: dto.backgroundCheckAccepted,
         bankName: dto.bankName,
         bankCode: dto.bankCode,
@@ -200,6 +211,11 @@ export class AuthService {
       );
     }
 
+    // 2b. Check if account has been deleted
+    if (user.deletedAt) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
     // 3. Check if email is verified (admins are pre-verified via seed, skip this gate)
     if (!user.isEmailVerified && user.role !== UserRole.ADMIN) {
       throw new ForbiddenException('Email not verified. Please verify your email to continue.');
@@ -241,6 +257,11 @@ export class AuthService {
 
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+
+    // Reject if account has been deleted
+    if (user.deletedAt) {
+      throw new UnauthorizedException('Your account has been deleted.');
     }
 
     // Extra safety check for drivers
