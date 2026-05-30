@@ -308,12 +308,14 @@ export class UsersService {
   ) {
     const searchTransmission = transmission?.toUpperCase();
 
-    const transmissionFilter = !searchTransmission
-      ? undefined
-      : searchTransmission === 'MANUAL'
-        ? { in: ['MANUAL', 'BOTH'] }
+    // AUTOMATIC matches AUTOMATIC, BOTH, or NULL (driver hasn't specified — defaults to automatic)
+    // MANUAL matches MANUAL or BOTH only
+    // Prisma cannot handle null inside an `in` array, so AUTOMATIC uses an OR clause
+    const transmissionWhere =
+      searchTransmission === 'MANUAL'
+        ? { OR: [{ transmission: 'MANUAL' }, { transmission: 'BOTH' }] }
         : searchTransmission === 'AUTOMATIC'
-          ? { in: ['AUTOMATIC', 'BOTH', null] as any }
+          ? { OR: [{ transmission: 'AUTOMATIC' }, { transmission: 'BOTH' }, { transmission: null }] }
           : undefined;
 
     const drivers = await this.prisma.user.findMany({
@@ -323,7 +325,7 @@ export class UsersService {
         isBlocked: false,
         locationLat: { not: null },
         locationLng: { not: null },
-        ...(transmissionFilter ? { transmission: transmissionFilter } : {}),
+        ...(transmissionWhere ?? {}),
         // Exclude drivers who already have an active trip — single query, no N+1
         tripsAsDriver: {
           none: {
