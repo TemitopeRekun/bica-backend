@@ -5,6 +5,8 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
@@ -31,6 +33,7 @@ export class RidesService {
     private fcmService: FcmService,
     private redis: RedisService,
     private mailService: MailService,
+    private config: ConfigService,
   ) { }
 
   // ─── PRICING ENGINE ──────────────────────────────────────────────
@@ -108,6 +111,88 @@ export class RidesService {
       commissionAmount,
       driverEarnings: totalAmount - commissionAmount,
     };
+  }
+
+  // ─── GPS DISTANCE SETTLEMENT ─────────────────────────────────────
+
+  private haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  private sumHaversine(points: { lat: number; lng: number }[]): number {
+    let total = 0;
+    for (let i = 1; i < points.length; i++) {
+      total += this.haversineKm(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng);
+    }
+    return Math.round(total * 10) / 10;
+  }
+
+  // Downsample to at most maxPoints, preserving first and last.
+  private downsample(points: { lat: number; lng: number }[], maxPoints: number): { lat: number; lng: number }[] {
+    if (points.length <= maxPoints) return points;
+    const result: { lat: number; lng: number }[] = [];
+    const step = (points.length - 1) / (maxPoints - 1);
+    for (let i = 0; i < maxPoints; i++) {
+      result.push(points[Math.round(i * step)]);
+    }
+    return result;
+  }
+
+  async snapToRoads(
+    points: { lat: number; lng: number }[],
+    estimatedDistanceKm: number,
+  ): Promise<{ distanceKm: number; source: string }> {
+    const SANITY_MULTIPLIER = 2.5;
+    const cap = estimatedDistanceKm * SANITY_MULTIPLIER;
+
+    const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.warn('[SNAP] No GOOGLE_MAPS_API_KEY — falling back to haversine');
+      return { distanceKm: Math.min(this.sumHaversine(points), cap), source: 'HAVERSINE_FALLBACK' };
+    }
+
+    // Roads API accepts max 100 points per request — batch into chunks of 100
+    const CHUNK_SIZE = 100;
+    const chunks: { lat: number; lng: number }[][] = [];
+    for (let i = 0; i < points.length; i += CHUNK_SIZE) {
+      // Downsample each chunk to 100 if needed (handles very dense GPS logs)
+      chunks.push(this.downsample(points.slice(i, i + CHUNK_SIZE), CHUNK_SIZE));
+    }
+
+    try {
+      let totalKm = 0;
+      for (const chunk of chunks) {
+        const path = chunk.map(p => `${p.lat},${p.lng}`).join('|');
+        const response = await axios.get('https://roads.googleapis.com/v1/snapToRoads', {
+          params: { path, interpolate: true, key: apiKey },
+        });
+
+        const snapped: { location: { latitude: number; longitude: number } }[] =
+          response.data.snappedPoints ?? [];
+
+        if (snapped.length < 2) continue;
+
+        for (let i = 1; i < snapped.length; i++) {
+          totalKm += this.haversineKm(
+            snapped[i - 1].location.latitude, snapped[i - 1].location.longitude,
+            snapped[i].location.latitude, snapped[i].location.longitude,
+          );
+        }
+      }
+
+      const distanceKm = Math.min(Math.round(totalKm * 10) / 10, cap);
+      this.logger.log(`[SNAP] Roads API distance: ${distanceKm}km (cap: ${cap}km)`);
+      return { distanceKm, source: 'ROADS_API' };
+    } catch (error: any) {
+      this.logger.warn(`[SNAP] Roads API failed: ${error.message} — falling back to haversine`);
+      return { distanceKm: Math.min(this.sumHaversine(points), cap), source: 'HAVERSINE_FALLBACK' };
+    }
   }
 
   // ─── CORE RIDE ACTIONS ───────────────────────────────────────────
@@ -505,6 +590,10 @@ export class RidesService {
       }
 
       updateData.startedAt = new Date();
+      // Register active trip so gateway can accumulate GPS points
+      if (trip.driverId) {
+        await this.redis.set(`trip:active:${trip.driverId}`, trip.id, 4 * 3600);
+      }
       updateData.carFrontUrl = dto.carFrontUrl;
       updateData.carBackUrl = dto.carBackUrl;
       updateData.carLeftUrl = dto.carLeftUrl;
@@ -513,47 +602,78 @@ export class RidesService {
 
     if (dto.status === TripStatus.COMPLETED) {
       updateData.completedAt = new Date();
-      
-      const startedAt = trip.startedAt ?? new Date();
-      const actualMins = Math.ceil((updateData.completedAt.getTime() - startedAt.getTime()) / 60000);
-      
-      // 🛡️ Snapshot Settlement (SSOT)
-      // We use the rates that were 'locked in' when the ride was created.
+
+      // Guard: compute actualMins from server timestamps only, minimum 1 minute
+      const startedAt = trip.startedAt;
+      if (!startedAt) {
+        this.logger.warn(`⚠️ [SETTLEMENT] Trip ${tripId} missing startedAt — using estimatedMins as fallback`);
+      }
+      const durationMs = startedAt ? (updateData.completedAt.getTime() - startedAt.getTime()) : 0;
+      const actualMins = Math.max(1, Math.ceil(durationMs / 60000));
+
+      // Resolve actual distance via GPS accumulation → Roads API → fallbacks
+      let gpsPoints: { lat: number; lng: number }[] = [];
+      try {
+        gpsPoints = await this.redis.lrange<{ lat: number; lng: number }>(`trip:gps:${tripId}`);
+      } catch (e: any) {
+        this.logger.warn(`⚠️ [SETTLEMENT] Redis unavailable for trip ${tripId} — using estimate: ${e.message}`);
+      }
+      let billableDistanceKm = trip.distanceKm;
+      let distanceSource = 'ESTIMATE_FALLBACK';
+
+      if (gpsPoints.length >= 2) {
+        const snapped = await this.snapToRoads(gpsPoints, trip.distanceKm);
+        billableDistanceKm = snapped.distanceKm;
+        distanceSource = snapped.source;
+      } else {
+        this.logger.warn(`⚠️ [SETTLEMENT] Trip ${tripId} has ${gpsPoints.length} GPS point(s) — using estimate`);
+      }
+
+      // Clean up GPS trail and active-trip marker — best-effort, never block settlement
+      await Promise.all([
+        this.redis.del(`trip:gps:${tripId}`).catch((e: any) => this.logger.warn(`[SETTLEMENT] GPS cleanup failed: ${e.message}`)),
+        trip.driverId ? this.redis.del(`trip:active:${trip.driverId}`).catch((e: any) => this.logger.warn(`[SETTLEMENT] Active-trip cleanup failed: ${e.message}`)) : Promise.resolve(),
+      ]);
+
+      // 🛡️ Snapshot Settlement (SSOT) — rates locked at trip creation
       const lookupSettings = {
         baseFare: (trip as any).baseFareSnapshot ?? 500,
         pricePerKm: (trip as any).pricePerKmSnapshot ?? 100,
         timeRate: (trip as any).timeRateSnapshot ?? 50,
         minimumFare: (trip as any).minimumFareSnapshot ?? 2000,
         minimumFareDistance: (trip as any).fareBreakdown?.minimumFareDistanceSnapshot ?? 4.5,
-        minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20
+        minimumFareDuration: (trip as any).minimumFareDurationSnapshot ?? 20,
       };
 
-      const { 
-        finalFare, 
-        baseFare, 
-        distanceComponent, 
-        timeComponent, 
-        totalMins, 
-        pricingBranch 
-      } = this.calculateTripFare(trip.distanceKm, actualMins, lookupSettings);
-      
+      const { finalFare, baseFare, distanceComponent, timeComponent, totalMins, pricingBranch } =
+        this.calculateTripFare(billableDistanceKm, actualMins, lookupSettings);
+
       const { commissionAmount, driverEarnings } = this.calculateSplit(finalFare, (trip as any).commissionPercent);
-      
+
       updateData.finalFare = finalFare;
       updateData.amount = finalFare;
       updateData.commissionAmount = commissionAmount;
       updateData.driverEarnings = driverEarnings;
-      updateData.fareBreakdown = { 
+      updateData.fareBreakdown = {
         totalAmount: finalFare,
-        baseFare, 
-        distanceKm: trip.distanceKm, 
-        distanceComponent, 
-        timeComponent, 
+        baseFare,
+        estimatedDistanceKm: trip.distanceKm,
+        billableDistanceKm,
+        distanceSource,
+        estimatedMins: trip.estimatedMins,
+        actualMins,
+        distanceComponent,
+        timeComponent,
         totalMins,
+        isEstimate: false,
         isSnapshotUsed: true,
-        pricingBranch, // Correctly extracted here
-        commissionPercent: (trip as any).commissionPercent
+        pricingBranch,
+        commissionPercent: (trip as any).commissionPercent,
       };
+
+      this.logger.log(
+        `✅ [SETTLEMENT] Trip ${tripId} | dist: ${billableDistanceKm}km (${distanceSource}) | time: ${actualMins}min | fare: ₦${finalFare}`,
+      );
     }
 
     const tripUpdate = await this.prisma.trip.update({

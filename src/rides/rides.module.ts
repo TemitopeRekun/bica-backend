@@ -12,7 +12,7 @@ import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 
 @Module({
   imports: [
-    forwardRef(() => AuthModule), 
+    forwardRef(() => AuthModule),
     AdminRealtimeModule,
     CloudinaryModule,
     BullModule.registerQueue({

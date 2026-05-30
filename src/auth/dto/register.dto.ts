@@ -5,6 +5,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MinLength,
   IsNotIn,
 } from 'class-validator';
@@ -87,7 +88,7 @@ export class RegisterDto {
 
   // Driver fields
   @IsOptional()
-  @IsString()
+  @Matches(/^\d{11}$/, { message: 'NIN must be exactly 11 digits' })
   nin?: string;
 
   @IsOptional()

@@ -76,4 +76,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const result = await this.client.set(key, serialized, 'EX', ttlSeconds, 'NX');
     return result === 'OK';
   }
+
+  // Append one or more serialized values to a Redis list
+  async rpush(key: string, ...values: any[]): Promise<void> {
+    await this.client.rpush(key, ...values.map(v => JSON.stringify(v)));
+  }
+
+  // Read all elements of a Redis list
+  async lrange<T>(key: string): Promise<T[]> {
+    const items = await this.client.lrange(key, 0, -1);
+    return items.map(item => JSON.parse(item) as T);
+  }
+
+  // Set TTL on an existing key (seconds)
+  async expire(key: string, ttlSeconds: number): Promise<void> {
+    await this.client.expire(key, ttlSeconds);
+  }
 }

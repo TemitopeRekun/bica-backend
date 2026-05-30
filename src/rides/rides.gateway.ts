@@ -11,6 +11,7 @@ import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 
 @WebSocketGateway({
   cors: { 
@@ -26,6 +27,7 @@ export class RidesGateway
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private redis: RedisService,
   ) {}
 
   private verifySocketToken(client: Socket): { sub: string, role: string } | null {
@@ -105,7 +107,7 @@ export class RidesGateway
   private readonly THROTTLE_MS = 1000; // 1 second
 
   @SubscribeMessage('driverlocation')
-  handleLocationUpdate(
+  async handleLocationUpdate(
     @MessageBody() data: { driverId: string; lat: number; lng: number },
   ) {
     if (!Number.isFinite(data.lat) || !Number.isFinite(data.lng)) {
@@ -117,7 +119,7 @@ export class RidesGateway
     const lastUpdate = this.lastLocationUpdate.get(data.driverId) || 0;
 
     if (now - lastUpdate < this.THROTTLE_MS) {
-      return; // Drop the update if it's too frequent
+      return;
     }
 
     this.lastLocationUpdate.set(data.driverId, now);
@@ -129,6 +131,18 @@ export class RidesGateway
       lng: data.lng,
       timestamp: new Date().toISOString(),
     });
+
+    // Accumulate GPS points if driver has an active IN_PROGRESS trip
+    try {
+      const tripId = await this.redis.get<string>(`trip:active:${data.driverId}`);
+      if (tripId) {
+        const key = `trip:gps:${tripId}`;
+        await this.redis.rpush(key, { lat: data.lat, lng: data.lng });
+        await this.redis.expire(key, 4 * 3600);
+      }
+    } catch (e) {
+      this.logger.warn(`[GPS] Failed to accumulate point for driver ${data.driverId}: ${e.message}`);
+    }
   }
 
   @SubscribeMessage('ride:cancel')
