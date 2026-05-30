@@ -6,6 +6,7 @@ import {
   UseGuards,
   Request,
   Logger,
+  BadRequestException,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
@@ -55,6 +56,13 @@ export class AuthController {
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('refresh')
+  refresh(@Body('refreshToken') refreshToken: string) {
+    if (!refreshToken) throw new BadRequestException('refreshToken is required');
+    return this.authService.refresh(refreshToken);
   }
 
   @UseGuards(AuthGuard)

@@ -115,6 +115,8 @@ model User {
   otpAttempts             Int              @default(0)
   lastOtpSentAt           DateTime?
   deletedAt               DateTime?
+  refreshToken            String?
+  refreshTokenExpiresAt   DateTime?
 
   @@index([role, isOnline, approvalStatus])
 }

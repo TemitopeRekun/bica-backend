@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Param,
   Patch,
   Post,
@@ -29,6 +30,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 @UseGuards(AuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
   constructor(private usersService: UsersService) {}
 
   @Patch('avatar')
@@ -69,7 +71,7 @@ export class UsersController {
     @Query('pickupLng') pickupLng?: string,
     @Query('transmission') transmission?: string,
   ) {
-    console.log('📡 [HTTP] Request received: GET /users/drivers/available', { pickupLat, pickupLng, transmission });
+    this.logger.debug(`GET /users/drivers/available pickupLat=${pickupLat} pickupLng=${pickupLng} transmission=${transmission}`);
     const lat = pickupLat ? parseFloat(pickupLat) : undefined;
     const lng = pickupLng ? parseFloat(pickupLng) : undefined;
     return this.usersService.getAvailableDrivers(lat, lng, transmission);

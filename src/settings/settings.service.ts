@@ -1,17 +1,25 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
+import { RedisService } from '../redis/redis.service';
+
+const SETTINGS_CACHE_KEY = 'system:settings';
+const SETTINGS_CACHE_TTL = 300; // 5 minutes
 
 @Injectable()
 export class SettingsService {
   constructor(
     private prisma: PrismaService,
     private adminRealtimeGateway: AdminRealtimeGateway,
+    private redis: RedisService,
   ) {}
 
   async getSettings() {
-    return this.prisma.systemSettings.upsert({
+    const cached = await this.redis.get<object>(SETTINGS_CACHE_KEY);
+    if (cached) return cached;
+
+    const settings = await this.prisma.systemSettings.upsert({
       where: { id: 1 },
       update: {},
       create: {
@@ -26,10 +34,12 @@ export class SettingsService {
         minimumFareDuration: 20,
       },
     });
+
+    await this.redis.set(SETTINGS_CACHE_KEY, settings, SETTINGS_CACHE_TTL);
+    return settings;
   }
 
   async updateSettings(dto: UpdateSettingsDto, adminId: string) {
-    // Ensure settings exist before updating
     await this.getSettings();
 
     const updated = await this.prisma.systemSettings.update({
@@ -37,6 +47,7 @@ export class SettingsService {
       data: { ...dto, updatedById: adminId },
     });
 
+    await this.redis.del(SETTINGS_CACHE_KEY);
     this.adminRealtimeGateway.notifySettingsUpdated(updated);
     return updated;
   }

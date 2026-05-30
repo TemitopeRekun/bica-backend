@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { randomInt } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -26,6 +27,7 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwt: JwtService,
+    private config: ConfigService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     private adminRealtimeGateway: AdminRealtimeGateway,
@@ -241,11 +243,12 @@ export class AuthService {
       }
     }
 
-    // 5. Issue JWT token
-    const token = await this.signToken(user.id, user.email, user.role);
+    // 5. Issue access + refresh tokens
+    const { accessToken, refreshToken } = await this.signTokens(user.id, user.email, user.role);
 
     return {
-      token,
+      token: accessToken,
+      refreshToken,
       user: this.sanitizeUser(user),
     };
   }
@@ -282,7 +285,7 @@ export class AuthService {
 
   /**
    * 🛡️ Secure Logout
-   * Clears FCM token and online status to prevent data leakage between users on the same device.
+   * Clears FCM token, online status, and revokes the stored refresh token hash.
    */
   async logout(userId: string) {
     return this.prisma.user.update({
@@ -292,8 +295,36 @@ export class AuthService {
         isOnline: false,
         locationLat: null,
         locationLng: null,
+        refreshToken: null,
+        refreshTokenExpiresAt: null,
       },
     });
+  }
+
+  async refresh(rawToken: string) {
+    let payload: any;
+    try {
+      payload = await this.jwt.verifyAsync(rawToken, {
+        secret: this.config.get<string>('JWT_REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || !user.refreshToken || !user.refreshTokenExpiresAt) {
+      throw new UnauthorizedException('Refresh token revoked');
+    }
+    if (user.refreshTokenExpiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token expired');
+    }
+    const tokenMatch = await bcrypt.compare(rawToken, user.refreshToken);
+    if (!tokenMatch) {
+      throw new UnauthorizedException('Refresh token mismatch');
+    }
+
+    const { accessToken, refreshToken } = await this.signTokens(user.id, user.email, user.role);
+    return { token: accessToken, refreshToken };
   }
 
   /**
@@ -352,12 +383,12 @@ export class AuthService {
       },
     });
 
-    const token = await this.signToken(user.id, user.email, user.role);
-    // Return sanitized user with corrected isEmailVerified flag
+    const { accessToken, refreshToken } = await this.signTokens(user.id, user.email, user.role);
     const sanitized = this.sanitizeUser({ ...user, isEmailVerified: true });
     return {
       message: 'Email verified successfully!',
-      token,
+      token: accessToken,
+      refreshToken,
       user: sanitized,
     };
   }
@@ -477,11 +508,26 @@ export class AuthService {
     return { message: 'Password updated successfully. You can now log in.' };
   }
 
-  // Signs a JWT token with the user's id, email and role embedded
-  private async signToken(id: string, email: string, role: UserRole) {
+  private async signTokens(id: string, email: string, role: UserRole) {
     const payload = { sub: id, email, role };
 
-    return this.jwt.signAsync(payload);
+    const [accessToken, refreshToken] = await Promise.all([
+      this.jwt.signAsync(payload),
+      this.jwt.signAsync(payload, {
+        secret: this.config.get<string>('JWT_REFRESH_SECRET'),
+        expiresIn: '30d',
+      }),
+    ]);
+
+    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+    const refreshTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id },
+      data: { refreshToken: refreshTokenHash, refreshTokenExpiresAt },
+    });
+
+    return { accessToken, refreshToken };
   }
 
   // Removes passwordHash and sensitive identity fields before sending user data to frontend

@@ -920,6 +920,14 @@ export class PaymentsService {
       return;
     }
 
+    if (trip.status !== 'COMPLETED') {
+      this.logger.warn(
+        `[WEBHOOK] Payment received for trip ${trip.id} but status is ${trip.status} — not COMPLETED. ` +
+        `Holding — will be caught by reconciliation when trip completes.`,
+      );
+      return;
+    }
+
     const verification = await this.monnify.verifyTransaction(txRef);
     if (!MONNIFY_SUCCESS_STATUSES.includes(verification.status?.toUpperCase())) {
       this.logger.warn(`Payment verification failed for trip ${trip.id}. Status: ${verification.status}`);

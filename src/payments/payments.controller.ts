@@ -22,6 +22,7 @@ import { ApprovedDriverGuard } from '../common/guards/approved-driver.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { GetPaymentsSummaryDto } from './dto/get-payments-summary.dto';
+import { ConfigService } from '@nestjs/config';
 import { NIGERIAN_BANKS } from './banks';
 import { PaymentsService } from './payments.service';
 
@@ -29,7 +30,14 @@ import { PaymentsService } from './payments.service';
 export class PaymentsController {
   private readonly logger = new Logger(PaymentsController.name);
 
-  constructor(private paymentsService: PaymentsService) {}
+  private readonly monnifyWebhookIp: string;
+
+  constructor(
+    private paymentsService: PaymentsService,
+    private config: ConfigService,
+  ) {
+    this.monnifyWebhookIp = this.config.get<string>('MONNIFY_WEBHOOK_IP') ?? '35.242.133.146';
+  }
 
   @Get('banks')
   getBanks() {
@@ -52,12 +60,10 @@ export class PaymentsController {
       return { responseCode: '00', responseMessage: 'Success' };
     }
 
-    // Monnify's documented static IP — enforce in production only
-    const MONNIFY_WEBHOOK_IP = '35.242.133.146';
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
       ?? req.ip;
 
-    if (process.env.NODE_ENV === 'production' && clientIp !== MONNIFY_WEBHOOK_IP) {
+    if (process.env.NODE_ENV === 'production' && clientIp !== this.monnifyWebhookIp) {
       this.logger.warn(`Webhook rejected: unexpected IP ${clientIp}`);
       return { responseCode: '00', responseMessage: 'Success' }; // 200, not 401 — never reject with error codes
     }

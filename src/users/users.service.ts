@@ -11,11 +11,12 @@ import { UpdateLocationDto } from './dto/update-location.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UpdateOnlineStatusDto } from './dto/update-online-status.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
-import { UserRole } from '@prisma/client';
+import { TripStatus, UserRole } from '@prisma/client';
 import { RidesGateway } from '../rides/rides.gateway';
 import { AdminRealtimeGateway } from '../admin/admin-realtime.gateway';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { maskNin } from '../common/utils/mask.util';
+import { RedisService } from '../redis/redis.service';
 import * as bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 
@@ -28,6 +29,7 @@ export class UsersService {
     private ridesGateway: RidesGateway,
     private adminRealtimeGateway: AdminRealtimeGateway,
     private cloudinaryService: CloudinaryService,
+    private redis: RedisService,
   ) { }
 
   // Get all users — admin only, with optional role filter
@@ -304,9 +306,32 @@ export class UsersService {
     pickupLng?: number,
     transmission?: string,
   ) {
+    const searchTransmission = transmission?.toUpperCase();
+
+    const transmissionFilter = !searchTransmission
+      ? undefined
+      : searchTransmission === 'MANUAL'
+        ? { in: ['MANUAL', 'BOTH'] }
+        : searchTransmission === 'AUTOMATIC'
+          ? { in: ['AUTOMATIC', 'BOTH', null] as any }
+          : undefined;
+
     const drivers = await this.prisma.user.findMany({
       where: {
-        isOnline: true, // Wide-Net: see everyone who is online
+        isOnline: true,
+        approvalStatus: 'APPROVED',
+        isBlocked: false,
+        locationLat: { not: null },
+        locationLng: { not: null },
+        ...(transmissionFilter ? { transmission: transmissionFilter } : {}),
+        // Exclude drivers who already have an active trip — single query, no N+1
+        tripsAsDriver: {
+          none: {
+            status: {
+              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS', 'ARRIVED', 'SCHEDULED'],
+            },
+          },
+        },
       },
       select: {
         id: true,
@@ -322,33 +347,10 @@ export class UsersService {
         ratingPoints: true,
         totalTrips: true,
         avatarUrl: true,
-        tripsAsDriver: {
-          where: {
-            status: {
-              in: ['PENDING_ACCEPTANCE', 'ASSIGNED', 'IN_PROGRESS', 'ARRIVED', 'SCHEDULED'],
-            },
-          },
-          select: { id: true },
-        },
       },
     });
 
-    const searchTransmission = transmission?.toUpperCase();
-
-    const available = drivers.filter(d => 
-      d.approvalStatus === 'APPROVED' &&
-      !d.isBlocked &&
-      d.locationLat !== null &&
-      d.locationLng !== null &&
-      (d as any).tripsAsDriver.length === 0 &&
-      (!searchTransmission
-        ? true
-        : searchTransmission === 'MANUAL'
-          ? (d.transmission === 'MANUAL' || d.transmission === 'BOTH')
-          : searchTransmission === 'AUTOMATIC'
-            ? (d.transmission === 'AUTOMATIC' || d.transmission === 'BOTH' || d.transmission === null)
-            : true)
-    );
+    const available = drivers;
 
     if (pickupLat !== undefined && pickupLng !== undefined) {
       const withDistance = available.map((driver) => {
@@ -381,7 +383,6 @@ export class UsersService {
 
     return available.map((d) => ({
       ...d,
-      tripsAsDriver: undefined,
       distanceKm: null,
       estimatedArrivalMins: null,
     }));
@@ -507,6 +508,26 @@ export class UsersService {
     if (!passwordValid) {
       // Return generic error to prevent user enumeration
       throw new ForbiddenException('Invalid credentials');
+    }
+
+    // Block deletion if user has an active trip in progress
+    const activeTrip = await this.prisma.trip.findFirst({
+      where: {
+        OR: [{ ownerId: userId }, { driverId: userId }],
+        status: { in: [TripStatus.ASSIGNED, TripStatus.ARRIVED, TripStatus.IN_PROGRESS] },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (activeTrip) {
+      throw new BadRequestException(
+        `Cannot delete account while a trip is active (trip ${activeTrip.id}, status: ${activeTrip.status}). Please complete or cancel the trip first.`,
+      );
+    }
+
+    // If driver, clean up Redis active-trip marker
+    if (user.role === UserRole.DRIVER) {
+      await this.redis.del(`trip:active:${userId}`).catch(() => {});
     }
 
     // Generate unique anonymized values using randomUUID

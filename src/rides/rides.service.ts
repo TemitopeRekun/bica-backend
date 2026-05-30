@@ -186,6 +186,11 @@ export class RidesService {
         }
       }
 
+      if (totalKm <= 0) {
+        this.logger.warn('[SNAP] Roads API returned zero distance — falling back to haversine');
+        return { distanceKm: Math.min(this.sumHaversine(points), cap), source: 'HAVERSINE_FALLBACK' };
+      }
+
       const distanceKm = Math.min(Math.round(totalKm * 10) / 10, cap);
       this.logger.log(`[SNAP] Roads API distance: ${distanceKm}km (cap: ${cap}km)`);
       return { distanceKm, source: 'ROADS_API' };
@@ -234,10 +239,14 @@ export class RidesService {
       throw new BadRequestException('You cannot request a ride from yourself');
     }
 
+    if (!dto.distanceKm || dto.distanceKm <= 0) {
+      throw new BadRequestException('A valid route distance is required to create a ride');
+    }
+
     const isScheduled = !!dto.scheduledAt;
     const { finalFare: amount, ...fareDetails } = this.calculateTripFare(
-      dto.distanceKm, 
-      dto.estimatedMins ?? 0, 
+      dto.distanceKm,
+      dto.estimatedMins ?? 0,
       settings as any
     );
     
@@ -618,11 +627,16 @@ export class RidesService {
       } catch (e: any) {
         this.logger.warn(`⚠️ [SETTLEMENT] Redis unavailable for trip ${tripId} — using estimate: ${e.message}`);
       }
-      let billableDistanceKm = trip.distanceKm;
+      // Guard: distanceKm must be a positive number — fall back to 0.1km minimum
+      const estimatedDistanceKm = (trip.distanceKm && trip.distanceKm > 0) ? trip.distanceKm : 0.1;
+      if (!trip.distanceKm || trip.distanceKm <= 0) {
+        this.logger.warn(`⚠️ [SETTLEMENT] Trip ${tripId} has invalid distanceKm (${trip.distanceKm}) — using 0.1km minimum`);
+      }
+      let billableDistanceKm = estimatedDistanceKm;
       let distanceSource = 'ESTIMATE_FALLBACK';
 
       if (gpsPoints.length >= 2) {
-        const snapped = await this.snapToRoads(gpsPoints, trip.distanceKm);
+        const snapped = await this.snapToRoads(gpsPoints, estimatedDistanceKm);
         billableDistanceKm = snapped.distanceKm;
         distanceSource = snapped.source;
       } else {
