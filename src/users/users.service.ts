@@ -308,24 +308,15 @@ export class UsersService {
   ) {
     const searchTransmission = transmission?.toUpperCase();
 
-    // AUTOMATIC matches AUTOMATIC, BOTH, or NULL (driver hasn't specified — defaults to automatic)
-    // MANUAL matches MANUAL or BOTH only
-    // Prisma cannot handle null inside an `in` array, so AUTOMATIC uses an OR clause
-    const transmissionWhere =
-      searchTransmission === 'MANUAL'
-        ? { OR: [{ transmission: 'MANUAL' }, { transmission: 'BOTH' }] }
-        : searchTransmission === 'AUTOMATIC'
-          ? { OR: [{ transmission: 'AUTOMATIC' }, { transmission: 'BOTH' }, { transmission: null }] }
-          : undefined;
-
     const drivers = await this.prisma.user.findMany({
       where: {
+        role: UserRole.DRIVER,
         isOnline: true,
         approvalStatus: 'APPROVED',
         isBlocked: false,
+        deletedAt: null,
         locationLat: { not: null },
         locationLng: { not: null },
-        ...(transmissionWhere ?? {}),
         // Exclude drivers who already have an active trip — single query, no N+1
         tripsAsDriver: {
           none: {
@@ -352,7 +343,13 @@ export class UsersService {
       },
     });
 
-    const available = drivers;
+    const available = !searchTransmission
+      ? drivers
+      : searchTransmission === 'MANUAL'
+        ? drivers.filter(d => d.transmission === 'MANUAL' || d.transmission === 'BOTH')
+        : searchTransmission === 'AUTOMATIC'
+          ? drivers.filter(d => d.transmission === 'AUTOMATIC' || d.transmission === 'BOTH' || d.transmission === null)
+          : drivers;
 
     if (pickupLat !== undefined && pickupLng !== undefined) {
       const withDistance = available.map((driver) => {
