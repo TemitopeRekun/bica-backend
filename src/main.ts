@@ -36,6 +36,7 @@ import {
 } from '@nestjs/platform-fastify';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
@@ -141,6 +142,16 @@ async function bootstrap() {
   if (missingVars.length > 0) {
     throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
   }
+
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('BicaDriver API')
+    .setDescription('Ride-hailing backend API for BicaDriver')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  SwaggerModule.setup('api/docs', app, document);
 
   await app.listen(process.env.PORT || 3001, '0.0.0.0');
 }

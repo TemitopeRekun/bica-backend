@@ -320,7 +320,12 @@ export class AuthService {
     }
     const tokenMatch = await bcrypt.compare(rawToken, user.refreshToken);
     if (!tokenMatch) {
-      throw new UnauthorizedException('Refresh token mismatch');
+      // Token reuse detected — revoke all sessions
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { refreshToken: null, refreshTokenExpiresAt: null },
+      });
+      throw new UnauthorizedException('Refresh token has been revoked');
     }
 
     const { accessToken, refreshToken } = await this.signTokens(user.id, user.email, user.role);

@@ -17,6 +17,7 @@ import { BullBoardModule } from '@bull-board/nestjs';
 import { FastifyAdapter } from '@bull-board/fastify';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SupportModule } from './support/support.module';
+import { HealthModule } from './health/health.module';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
@@ -91,6 +92,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
     }),
     NotificationsModule,
     SupportModule,
+    HealthModule,
   ],
   providers: [
     {
