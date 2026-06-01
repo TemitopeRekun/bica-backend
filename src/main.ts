@@ -11,16 +11,14 @@ if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: process.env.NODE_ENV || 'development',
-    integrations: [
-      nodeProfilingIntegration(),
-    ],
+    integrations: [nodeProfilingIntegration()],
     tracesSampleRate: 1.0,
     profilesSampleRate: 1.0,
     beforeSend(event) {
       if (event.request?.data) {
         const data = event.request.data as any;
         const sensitiveFields = ['password', 'token', 'bica_token', 'apiKey', 'secret'];
-        sensitiveFields.forEach(field => {
+        sensitiveFields.forEach((field) => {
           if (data[field]) data[field] = '[REDACTED]';
         });
       }
@@ -46,7 +44,7 @@ async function bootstrap() {
   const adapter = new FastifyAdapter({
     logger: false,
     bodyLimit: 10 * 1024 * 1024,
-    trustProxy: true
+    trustProxy: true,
   });
 
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -58,28 +56,28 @@ async function bootstrap() {
   app.useLogger(app.get(PinoLogger));
 
   const config = app.get(ConfigService);
+  const logger = new Logger('Bootstrap');
+
   const corsOrigins = (
     config.get<string>('CORS_ORIGINS') ??
-    'http://localhost:3001,http://localhost:5173,https://bicadriver.netlify.app'
+    'http://localhost:3000,http://localhost:3001,http://localhost:5173,https://bicadriver.netlify.app,https://bicadrive.app,https://app.bicadriver.ng'
   )
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-  const logger = new Logger('Bootstrap');
   logger.log(`🛡️ CORS Origins Allowed: ${corsOrigins.join(', ')}`);
 
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
 
-      if (corsOrigins.indexOf(origin) !== -1 || origin.includes('localhost') || origin.includes('netlify.app')) {
-        callback(null, true);
-      } else {
-        logger.warn(`🚫 CORS Blocked for origin: ${origin}`);
-        callback(new Error('Not allowed by CORS'), false);
+      if (corsOrigins.includes(origin)) {
+        return callback(null, true);
       }
+
+      logger.warn(`🚫 CORS Blocked for origin: ${origin}`);
+      return callback(new Error('Not allowed by CORS'), false);
     },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'PUT'],
     allowedHeaders: [
@@ -103,7 +101,7 @@ async function bootstrap() {
         defaultSrc: [`'self'`],
         styleSrc: [`'self'`, `'unsafe-inline'`],
         imgSrc: [`'self'`, 'data:', 'validator.swagger.io', 'res.cloudinary.com'],
-        scriptSrc: [`'self'`, `https: 'unsafe-inline'`],
+        scriptSrc: [`'self'`, 'https:', `'unsafe-inline'`],
       },
     },
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -138,6 +136,7 @@ async function bootstrap() {
     'MONNIFY_BASE_URL',
     'MONNIFY_CONTRACT_CODE',
   ];
+
   const missingVars = requiredEnvVars.filter((key) => !process.env[key]);
   if (missingVars.length > 0) {
     throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
