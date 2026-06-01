@@ -56,8 +56,10 @@ export class PaymentsController {
         'Check that rawBody:true is set in NestFactory.create() and ' +
         'the Fastify rawBody plugin is wired correctly.',
       );
-      // Return 200 so Monnify does not retry a server misconfiguration
-      return { responseCode: '00', responseMessage: 'Success' };
+      throw new BadRequestException(
+        'Webhook handler misconfigured: rawBody not available. ' +
+        'Check server configuration and restart.',
+      );
     }
 
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()

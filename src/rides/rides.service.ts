@@ -36,6 +36,24 @@ export class RidesService {
     private config: ConfigService,
   ) { }
 
+  private getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+private getErrorStack(error: unknown): string | undefined {
+  return error instanceof Error ? error.stack : undefined;
+}
+
+private hasErrorCode(error: unknown): error is { code: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof (error as { code: unknown }).code === 'string'
+  );
+}
+
   // ─── PRICING ENGINE ──────────────────────────────────────────────
 
   /**
@@ -201,131 +219,180 @@ export class RidesService {
   }
 
   // ─── CORE RIDE ACTIONS ───────────────────────────────────────────
+async createRide(ownerId: string, dto: CreateRideDto) {
+  const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
+  if (!settings) throw new NotFoundException('System settings not found');
 
-  async createRide(ownerId: string, dto: CreateRideDto) {
-    const settings = await this.prisma.systemSettings.findUnique({ where: { id: 1 } });
-    if (!settings) throw new NotFoundException('System settings not found');
-
-    if (
-      typeof settings.commission !== 'number' ||
-      settings.commission < 0 ||
-      settings.commission > 100
-    ) {
-      throw new BadRequestException(
-        `Invalid commission rate configured (${settings.commission}). Must be 0–100.`,
-      );
-    }
-
-    const activeTrip = await this.prisma.trip.findFirst({
-      where: {
-        ownerId,
-        status: {
-          in: [
-            TripStatus.PENDING,
-            TripStatus.SEARCHING,
-            TripStatus.PENDING_ACCEPTANCE,
-            TripStatus.ASSIGNED,
-            TripStatus.IN_PROGRESS,
-          ],
-        },
-      },
-    });
-
-    if (activeTrip) {
-      throw new ForbiddenException('You already have an active ride request');
-    }
-
-    if (dto.driverId && dto.driverId === ownerId) {
-      throw new BadRequestException('You cannot request a ride from yourself');
-    }
-
-    if (!dto.distanceKm || dto.distanceKm <= 0) {
-      throw new BadRequestException('A valid route distance is required to create a ride');
-    }
-
-    const isScheduled = !!dto.scheduledAt;
-    const { finalFare: amount, ...fareDetails } = this.calculateTripFare(
-      dto.distanceKm,
-      dto.estimatedMins ?? 0,
-      settings as any
+  if (
+    typeof settings.commission !== 'number' ||
+    settings.commission < 0 ||
+    settings.commission > 100
+  ) {
+    throw new BadRequestException(
+      `Invalid commission rate configured (${settings.commission}). Must be 0–100.`,
     );
-    
-    const { commissionAmount, driverEarnings } = this.calculateSplit(amount, settings.commission);
+  }
 
-    const tripStatus = isScheduled ? TripStatus.SCHEDULED : TripStatus.PENDING_ACCEPTANCE;
-
-    this.logger.log(`📍 [RIDE_SSOT] Created: ${amount} (Base: ${fareDetails.baseFare} | Dist: ${dto.distanceKm} | Time: ${dto.estimatedMins})`);
-
-    const trip = await this.prisma.trip.create({
-      data: {
-        ownerId,
-        driverId: isScheduled ? null : dto.driverId,
-        status: tripStatus,
-        pickupAddress: dto.pickupAddress,
-        pickupLat: dto.pickupLat,
-        pickupLng: dto.pickupLng,
-        destAddress: dto.destAddress,
-        destLat: dto.destLat,
-        destLng: dto.destLng,
-        distanceKm: dto.distanceKm,
-        estimatedMins: dto.estimatedMins ?? null,
-        amount,
-        commissionAmount,
-        driverEarnings,
-        commissionPercent: settings.commission as any,
-        scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
-        // 🔄 Schema Alignment: Explicitly initialize optional unique fields
-        paymentReference: null,
-        monnifyTxRef: null,
-        // 🛡️ Lock in the Snapshot (SSOT)
-        baseFareSnapshot: settings.baseFare,
-        pricePerKmSnapshot: settings.pricePerKm,
-        timeRateSnapshot: settings.timeRate,
-        minimumFareSnapshot: (settings as any).minimumFare ?? 2000,
-        minimumFareDurationSnapshot: (settings as any).minimumFareDuration ?? 20,
-        // minimumFareDistance is missing from schema, but we'll include it in fareBreakdown JSON below
-        fareBreakdown: {
-          totalAmount: amount,
-          baseFare: fareDetails.baseFare,
-          distanceKm: dto.distanceKm,
-          distanceComponent: fareDetails.distanceComponent,
-          timeComponent: fareDetails.timeComponent,
-          commissionPercent: settings.commission as any,
-          totalMins: dto.estimatedMins,
-          isEstimate: true,
-          pricingBranch: fareDetails.pricingBranch,
-          minimumFareDistanceSnapshot: settings.minimumFareDistance 
-        },
-      } as any,
-      include: {
-        owner: { select: { id: true, name: true, phone: true } },
-        driver: { select: { id: true, name: true, phone: true, ratingPoints: true } },
+  const activeTrip = await this.prisma.trip.findFirst({
+    where: {
+      ownerId,
+      status: {
+        in: [
+          TripStatus.PENDING,
+          TripStatus.SEARCHING,
+          TripStatus.PENDING_ACCEPTANCE,
+          TripStatus.ASSIGNED,
+          TripStatus.ARRIVED,
+          TripStatus.IN_PROGRESS,
+          TripStatus.SCHEDULED,
+        ],
       },
-    });
+    },
+  });
 
-    if (isScheduled) {
-      const schedDate = new Date(dto.scheduledAt!);
-      const delayMs = Math.max(schedDate.getTime() - Date.now() - (15 * 60 * 1000), 0);
-      await this.rideQueue.add('ride-search', { tripId: trip.id, pickupLat: dto.pickupLat, pickupLng: dto.pickupLng }, { delay: delayMs });
-    } else {
-      this.gateway.notifyDriverNewRide(dto.driverId!, trip);
-      this.fcmService.queueNotification(dto.driverId!, {
+  if (activeTrip) {
+    throw new ForbiddenException('You already have an active ride request');
+  }
+
+  const unfinishedPaymentTrip = await this.prisma.trip.findFirst({
+    where: {
+      ownerId,
+      status: TripStatus.COMPLETED,
+      paymentStatus: { in: [PaymentStatus.PENDING, PaymentStatus.FAILED] },
+    },
+  });
+
+  if (unfinishedPaymentTrip) {
+    throw new ForbiddenException(
+      'You have an unpaid or failed payment for a completed trip. Please resolve it before booking another ride.',
+    );
+  }
+
+  const ratingPendingTrip = await this.prisma.trip.findFirst({
+    where: {
+      ownerId,
+      status: TripStatus.COMPLETED,
+      paymentStatus: PaymentStatus.PAID,
+      rating: { is: null },
+    },
+  });
+
+  if (ratingPendingTrip) {
+    throw new ForbiddenException(
+      'Please rate your previous trip before booking another ride.',
+    );
+  }
+
+  if (dto.driverId && dto.driverId === ownerId) {
+    throw new BadRequestException('You cannot request a ride from yourself');
+  }
+
+  if (!dto.distanceKm || dto.distanceKm <= 0) {
+    throw new BadRequestException(
+      'A valid route distance is required to create a ride',
+    );
+  }
+
+  const isScheduled = !!dto.scheduledAt;
+  const { finalFare: amount, ...fareDetails } = this.calculateTripFare(
+    dto.distanceKm,
+    dto.estimatedMins ?? 0,
+    settings as any,
+  );
+
+  const { commissionAmount, driverEarnings } = this.calculateSplit(
+    amount,
+    settings.commission,
+  );
+
+  const tripStatus = isScheduled
+    ? TripStatus.SCHEDULED
+    : TripStatus.PENDING_ACCEPTANCE;
+
+  this.logger.log(
+    `📍 [RIDE_SSOT] Created: ${amount} (Base: ${fareDetails.baseFare} | Dist: ${dto.distanceKm} | Time: ${dto.estimatedMins})`,
+  );
+
+  const trip = await this.prisma.trip.create({
+    data: {
+      ownerId,
+      driverId: isScheduled ? null : dto.driverId,
+      status: tripStatus,
+      pickupAddress: dto.pickupAddress,
+      pickupLat: dto.pickupLat,
+      pickupLng: dto.pickupLng,
+      destAddress: dto.destAddress,
+      destLat: dto.destLat,
+      destLng: dto.destLng,
+      distanceKm: dto.distanceKm,
+      estimatedMins: dto.estimatedMins ?? null,
+      amount,
+      commissionAmount,
+      driverEarnings,
+      commissionPercent: settings.commission as any,
+      scheduledAt: isScheduled ? new Date(dto.scheduledAt!) : null,
+      paymentReference: null,
+      monnifyTxRef: null,
+      baseFareSnapshot: settings.baseFare,
+      pricePerKmSnapshot: settings.pricePerKm,
+      timeRateSnapshot: settings.timeRate,
+      minimumFareSnapshot: (settings as any).minimumFare ?? 2000,
+      minimumFareDurationSnapshot: (settings as any).minimumFareDuration ?? 20,
+      fareBreakdown: {
+        totalAmount: amount,
+        baseFare: fareDetails.baseFare,
+        distanceKm: dto.distanceKm,
+        distanceComponent: fareDetails.distanceComponent,
+        timeComponent: fareDetails.timeComponent,
+        commissionPercent: settings.commission as any,
+        totalMins: dto.estimatedMins,
+        isEstimate: true,
+        pricingBranch: fareDetails.pricingBranch,
+        minimumFareDistanceSnapshot: settings.minimumFareDistance,
+      },
+    } as any,
+    include: {
+      owner: { select: { id: true, name: true, phone: true } },
+      driver: {
+        select: { id: true, name: true, phone: true, ratingPoints: true },
+      },
+    },
+  });
+
+  if (isScheduled) {
+    const schedDate = new Date(dto.scheduledAt!);
+    const delayMs = Math.max(
+      schedDate.getTime() - Date.now() - 15 * 60 * 1000,
+      0,
+    );
+    await this.rideQueue.add(
+      'ride-search',
+      { tripId: trip.id, pickupLat: dto.pickupLat, pickupLng: dto.pickupLng },
+      { delay: delayMs },
+    );
+  } else {
+    this.gateway.notifyDriverNewRide(dto.driverId!, trip);
+    this.fcmService
+      .queueNotification(dto.driverId!, {
         title: 'New Ride Request!',
         body: `You have a new ride request from ${(trip as any).owner.name}.`,
         data: { tripId: trip.id, type: 'new_ride' },
-      }).catch(e => this.logger.error(`FCM Error: ${e.message}`));
-    }
-
-    this.adminRealtimeGateway.notifyTripUpdated('created', trip);
-    return {
-      ...trip,
-      _debug: {
-        isBackendDynamicPrice: true,
-        roundedAmount: amount,
-        serverTime: new Date().toISOString()
-      }
-    };
+      })
+      .catch((e: unknown) =>
+        this.logger.error(`FCM Error: ${this.getErrorMessage(e)}`),
+      );
   }
+
+  this.adminRealtimeGateway.notifyTripUpdated('created', trip);
+  return {
+    ...trip,
+    _debug: {
+      isBackendDynamicPrice: true,
+      roundedAmount: amount,
+      serverTime: new Date().toISOString(),
+    },
+  };
+}
 
   async getHistory(userId: string, role: UserRole, pagination: PaginationDto) {
     const where = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
@@ -342,59 +409,74 @@ export class RidesService {
     });
   }
 
-  async getCurrentRide(userId: string, role: UserRole) {
-    try {
-      const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
-      const trip = await this.prisma.trip.findFirst({
-        where: {
-          ...filter,
-          status: { 
-            in: [
-              TripStatus.PENDING_ACCEPTANCE, 
-              TripStatus.SEARCHING,
-              TripStatus.SCHEDULED,
-              TripStatus.ASSIGNED, 
-              TripStatus.ARRIVED, 
-              TripStatus.IN_PROGRESS,
-              TripStatus.COMPLETED
-            ] 
+async getCurrentRide(userId: string, role: UserRole) {
+  try {
+    const filter = role === UserRole.DRIVER ? { driverId: userId } : { ownerId: userId };
+    const trip = await this.prisma.trip.findFirst({
+      where: {
+        ...filter,
+        status: {
+          in: [
+            TripStatus.PENDING_ACCEPTANCE,
+            TripStatus.SEARCHING,
+            TripStatus.SCHEDULED,
+            TripStatus.ASSIGNED,
+            TripStatus.ARRIVED,
+            TripStatus.IN_PROGRESS,
+            TripStatus.COMPLETED,
+          ],
+        },
+      },
+      include: {
+        owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
+        driver: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            avatarUrl: true,
+            ratingPoints: true,
           },
         },
-        include: {
-          owner: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-          driver: { select: { id: true, name: true, phone: true, avatarUrl: true, ratingPoints: true } },
-          rating: { select: { id: true } },
-        },
-        orderBy: { updatedAt: 'desc' },
-      });
+        rating: { select: { id: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
 
-      if (trip) {
-        let postTripAction = 'CLEARED';
-        if (trip.status === TripStatus.COMPLETED) {
-          if (trip.paymentStatus !== PaymentStatus.PAID) {
-            postTripAction = role === UserRole.DRIVER ? 'AWAITING_PAYMENT' : 'REQUIRE_PAYMENT';
-          } else if (role === UserRole.OWNER && !trip.rating) {
-            postTripAction = 'REQUIRE_RATING';
-          }
+    if (trip) {
+      let postTripAction = 'CLEARED';
+      if (trip.status === TripStatus.COMPLETED) {
+        if (trip.paymentStatus !== PaymentStatus.PAID) {
+          postTripAction =
+            role === UserRole.DRIVER ? 'AWAITING_PAYMENT' : 'REQUIRE_PAYMENT';
+        } else if (role === UserRole.OWNER && !trip.rating) {
+          postTripAction = 'REQUIRE_RATING';
         }
+      }
 
-        if (trip.status === TripStatus.COMPLETED && postTripAction === 'CLEARED') {
-          this.logger.debug(`🔍 [REFRESH] Most recent trip ${trip.id} is already completely settled. Returning null.`);
-          return null;
-        }
-
-        this.logger.debug(`🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] [Action: ${postTripAction}] for ${role} ${userId}`);
-        return { ...trip, postTripAction };
-      } else {
-        this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+      if (trip.status === TripStatus.COMPLETED && postTripAction === 'CLEARED') {
+        this.logger.debug(
+          `🔍 [REFRESH] Most recent trip ${trip.id} is already completely settled. Returning null.`,
+        );
         return null;
       }
-    } catch (error) {
-      this.logger.error(`❌ [REFRESH_ERROR] Failed to query current ride for ${role} ${userId}: ${error.message}`);
-      // Safety: Return null instead of 500 Internal Server Error to avoid breaking the frontend UI.
-      return null;
+
+      this.logger.debug(
+        `🔍 [REFRESH] Found current ride ${trip.id} [Status: ${trip.status}] [Action: ${postTripAction}] for ${role} ${userId}`,
+      );
+      return { ...trip, postTripAction };
     }
+
+    this.logger.debug(`🔍 [REFRESH] No current ride found for ${role} ${userId}`);
+    return null;
+  } catch (error: unknown) {
+    this.logger.error(
+      `❌ [REFRESH_ERROR] Failed to query current ride for ${role} ${userId}: ${this.getErrorMessage(error)}`,
+      this.getErrorStack(error),
+    );
+    return null;
   }
+}
 
   async findOne(id: string, userId: string) {
     const trip = await this.prisma.trip.findUnique({
@@ -409,82 +491,101 @@ export class RidesService {
     return trip;
   }
 
-  async acceptRide(tripId: string, driverId: string, acceptanceImageUrl: string) {
-    // Generate 4-digit OTP
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+ async acceptRide(tripId: string, driverId: string, acceptanceImageUrl: string) {
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-    try {
-      const updated = await this.prisma.trip.update({
-        where: { 
-          id: tripId,
-          status: TripStatus.PENDING_ACCEPTANCE // 🛡️ Atomic check: prevents two drivers from accepting
+  try {
+    const updated = await this.prisma.trip.update({
+      where: {
+        id: tripId,
+        status: TripStatus.PENDING_ACCEPTANCE,
+      },
+      data: {
+        status: TripStatus.ASSIGNED,
+        driverId,
+        otp,
+        acceptanceImageUrl,
+        otpAttempts: 0,
+      },
+      include: {
+        owner: { select: { id: true, name: true, phone: true } },
+        driver: {
+          select: { id: true, name: true, ratingPoints: true, avatarUrl: true },
         },
-        data: { 
-          status: TripStatus.ASSIGNED, 
-          driverId,
-          otp,
-          acceptanceImageUrl,
-          otpAttempts: 0
-        },
-        include: {
-          owner: { select: { id: true, name: true, phone: true } },
-          driver: { select: { id: true, name: true, ratingPoints: true, avatarUrl: true } },
-        },
-      });
+      },
+    });
 
-      this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
-      this.fcmService.queueNotification(updated.ownerId, {
+    this.gateway.notifyTripStatusChanged(tripId, TripStatus.ASSIGNED, updated);
+    this.fcmService
+      .queueNotification(updated.ownerId, {
         title: 'Driver Found!',
         body: `${updated.driver?.name ?? 'A driver'} has accepted your ride. Verification Code: ${otp}`,
         data: { tripId, type: 'ride_accepted', otp },
-      }).catch(e => this.logger.error(`FCM Accept Error: ${e.message}`));
+      })
+      .catch((e: unknown) =>
+        this.logger.error(`FCM Accept Error: ${this.getErrorMessage(e)}`),
+      );
 
-      return updated;
-    } catch (error) {
-      if (error.code === 'P2025') { // Prisma RecordNotFound (caused by the status check failing)
-        throw new BadRequestException('Trip is no longer available or has already been accepted.');
-      }
-      throw error;
+    return updated;
+  } catch (error: unknown) {
+    if (this.hasErrorCode(error) && error.code === 'P2025') {
+      throw new BadRequestException(
+        'Trip is no longer available or has already been accepted.',
+      );
     }
+    throw error;
+  }
+}
+
+async regenerateOtp(tripId: string, driverId: string) {
+  const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
+  if (!trip) throw new NotFoundException('Trip not found');
+  if (trip.driverId !== driverId) throw new ForbiddenException('Not your trip');
+  if (trip.status !== TripStatus.ARRIVED) {
+    throw new BadRequestException('Can only regenerate PIN when arrived');
   }
 
-  async regenerateOtp(tripId: string, driverId: string) {
-    const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
-    if (!trip) throw new NotFoundException('Trip not found');
-    if (trip.driverId !== driverId) throw new ForbiddenException('Not your trip');
-    if (trip.status !== TripStatus.ARRIVED) throw new BadRequestException('Can only regenerate PIN when arrived');
-    
-    // 🛡️ Rate limit: 1 regeneration per 60 seconds per trip
-    const rateLimitKey = `otp-regen:${tripId}`;
-    try {
-      const acquired = await this.redis.setIfNotExists(rateLimitKey, '1', 60);
-      if (!acquired) {
-        throw new BadRequestException('Please wait 60 seconds before requesting another PIN.');
-      }
-    } catch (e) {
-      if (e instanceof BadRequestException) throw e;
-      this.logger.warn(`Redis unavailable for OTP rate limit — proceeding without rate limit: ${e.message}`);
+  const rateLimitKey = `otp-regen:${tripId}`;
+  try {
+    const acquired = await this.redis.setIfNotExists(rateLimitKey, '1', 60);
+    if (!acquired) {
+      throw new BadRequestException(
+        'Please wait 60 seconds before requesting another PIN.',
+      );
     }
+  } catch (e: unknown) {
+    if (e instanceof BadRequestException) throw e;
+    this.logger.warn(
+      `Redis unavailable for OTP rate limit — proceeding without rate limit: ${this.getErrorMessage(e)}`,
+    );
+  }
 
-    const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    const updated = await this.prisma.trip.update({
-      where: { id: tripId },
-      data: { otp: newOtp, otpAttempts: 0 },
-      include: {
-        owner: { select: { id: true, name: true } },
-      }
-    });
+  const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
+  const updated = await this.prisma.trip.update({
+    where: { id: tripId },
+    data: { otp: newOtp, otpAttempts: 0 },
+    include: {
+      owner: { select: { id: true, name: true } },
+    },
+  });
 
-    // Notify owner of new PIN
-    this.gateway.server.to(`user:${updated.ownerId}`).emit('ride:otp_regenerated', { tripId, otp: newOtp });
-    this.fcmService.queueNotification(updated.ownerId, {
+  this.gateway.server.to(`user:${updated.ownerId}`).emit('ride:otp_regenerated', {
+    tripId,
+    otp: newOtp,
+  });
+
+  this.fcmService
+    .queueNotification(updated.ownerId, {
       title: 'New Verification Code',
       body: `Your new ride verification code is ${newOtp}`,
-      data: { tripId, otp: newOtp, type: 'otp_regenerated' }
-    }).catch(e => this.logger.error(`FCM Regenerate Error: ${e.message}`));
+      data: { tripId, otp: newOtp, type: 'otp_regenerated' },
+    })
+    .catch((e: unknown) =>
+      this.logger.error(`FCM Regenerate Error: ${this.getErrorMessage(e)}`),
+    );
 
-    return { success: true, message: 'New PIN sent to owner' };
-  }
+  return { success: true, message: 'New PIN sent to owner' };
+}
 
   async declineRide(tripId: string, driverId: string) {
     const trip = await this.prisma.trip.findUnique({ where: { id: tripId } });
@@ -868,7 +969,7 @@ export class RidesService {
           title: '⚠️ Rating Warning',
           body: 'Your rating is dropping. If it drops below 4.5, your account will be suspended for 72 hours.',
           data: { type: 'rating_warning', tier: '1' }
-        }).catch(e => this.logger.error(`FCM Warning Error: ${e.message}`));
+        }).catch(e => this.logger.error(`FCM Warning Error: ${this.getErrorMessage(e)}`));
         await this.mailService.sendTier1RatingWarning(driver.email, driver.name);
         this.adminRealtimeGateway.notifyRatingWarning({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, tier: 1 });
       } 
@@ -877,7 +978,7 @@ export class RidesService {
           title: '🚫 Account Suspended',
           body: 'Your account has been suspended for 72 hours due to low ratings. If you believe this is an error, please contact support.',
           data: { type: 'rating_suspension', tier: '1' }
-        }).catch(e => this.logger.error(`FCM Suspend Error: ${e.message}`));
+        }).catch(e => this.logger.error(`FCM Suspend Error: ${this.getErrorMessage(e)}`));
         await this.mailService.sendTier1Suspension(driver.email, driver.name, suspendedUntil!);
         this.adminRealtimeGateway.notifyDriverSuspended({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, suspensionTier: 1, suspendedUntil: suspendedUntil! });
       }
@@ -900,7 +1001,7 @@ export class RidesService {
         this.adminRealtimeGateway.notifyDriverSuspended({ driverId: driver.id, driverName: driver.name, newRating: driver.ratingPoints, suspensionTier: 2, suspendedUntil: suspendedUntil! });
       }
     } catch (e) {
-      this.logger.error(`Failed to send rating notifications for driver ${driver.id}: ${e.message}`);
+      this.logger.error(`Failed to send rating notifications for driver ${driver.id}: ${this.getErrorMessage(e)}`);
     }
   }
 

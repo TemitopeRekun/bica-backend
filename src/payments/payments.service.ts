@@ -54,6 +54,15 @@ export class PaymentsService {
     private fcmService: FcmService,
   ) {}
 
+  private getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+private getErrorStack(error: unknown): string | undefined {
+  return error instanceof Error ? error.stack : undefined;
+}
+
   private async getDriverPayoutProfile(
     driverId: string,
   ): Promise<DriverPayoutProfile | null> {
@@ -646,16 +655,36 @@ export class PaymentsService {
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
       select: {
-        id: true, paymentStatus: true, monnifyTxRef: true, amount: true,
+        id: true, paymentStatus: true, monnifyTxRef: true, paymentReference: true, amount: true,
         ownerId: true, driverId: true, driverEarnings: true, commissionAmount: true,
         driver: { select: { id: true, name: true } },
       },
     });
     if (!trip) throw new NotFoundException(`Trip ${tripId} not found`);
     if (trip.paymentStatus !== 'PAID') throw new BadRequestException(`Trip ${tripId} is not PAID — cannot finalize`);
-    if (!trip.monnifyTxRef) throw new BadRequestException(`Trip ${tripId} has no monnifyTxRef`);
 
-    const verification = await this.monnify.verifyTransaction(trip.monnifyTxRef);
+    let txRef = trip.monnifyTxRef;
+    if (!txRef) {
+      // Fallback: try to recover txRef from paymentReference encoded tripId
+      const payRef = trip.paymentReference as string | undefined;
+      const match = payRef?.match(/^BICA-([0-9a-f]{32})-(.+)/i);
+      if (match) {
+        const extractedTxRef = match[2];
+        if (extractedTxRef) {
+          this.logger.log(`[FINALIZE_RECOVERY] Trip ${tripId} had no monnifyTxRef — extracted from paymentReference: ${extractedTxRef}`);
+          txRef = extractedTxRef;
+        }
+      }
+    }
+
+    if (!txRef) {
+      throw new BadRequestException(
+        `Trip ${tripId} cannot be finalized: no monnifyTxRef or recoverable paymentReference found. ` +
+        `Contact admin with trip ID and Monnify transaction reference.`
+      );
+    }
+
+    const verification = await this.monnify.verifyTransaction(txRef);
     return this.settleRecoveredTrip(trip, verification.amountPaid, verification.paymentMethod);
   }
 
@@ -826,9 +855,12 @@ export class PaymentsService {
             message: 'Partial payment received. Please settle the balance.',
           };
         }
-      } catch (error) {
-        this.logger.error(`Failed proactive verification for trip ${trip.id}: ${error.message}`);
-      }
+      } catch (error: unknown) {
+      this.logger.error(
+        `Failed proactive verification for trip ${trip.id}: ${this.getErrorMessage(error)}`,
+        this.getErrorStack(error),
+      );
+    }
     }
 
     return {
