@@ -1,42 +1,27 @@
-import { Controller, Get, Logger } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Controller, Get } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
+import { PrismaService } from '../prisma/prisma.service';
+import Redis from 'ioredis';
 
 @SkipThrottle()
 @Controller('health')
 export class HealthController {
-  private readonly logger = new Logger(HealthController.name);
-  private prisma: PrismaClient;
-
-  constructor() {
-    if (process.env.DATABASE_URL) {
-      this.prisma = new PrismaClient();
-    }
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   @Get()
   async check() {
     const checks: Record<string, string> = {};
-
-    // App
     checks.app = 'ok';
 
-    // Database
-    if (this.prisma) {
-      try {
-        await this.prisma.$queryRaw`SELECT 1`;
-        checks.database = 'ok';
-      } catch {
-        checks.database = 'error';
-      }
-    } else {
-      checks.database = 'skipped (no DATABASE_URL)';
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      checks.database = 'ok';
+    } catch {
+      checks.database = 'error';
     }
 
-    // Redis
     if (process.env.REDIS_URL) {
       try {
-        const { default: Redis } = await import('ioredis');
         const redis = new Redis(process.env.REDIS_URL, {
           maxRetriesPerRequest: 1,
           connectTimeout: 3000,
@@ -50,7 +35,7 @@ export class HealthController {
         checks.redis = 'error';
       }
     } else {
-      checks.redis = 'skipped (no REDIS_URL)';
+      checks.redis = 'skipped no REDIS_URL';
     }
 
     const healthy = Object.values(checks).every((v) => v === 'ok');
