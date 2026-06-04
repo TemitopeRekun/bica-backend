@@ -15,6 +15,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { BullModule } from '@nestjs/bullmq';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { FastifyAdapter } from '@bull-board/fastify';
+import { ScheduleModule } from '@nestjs/schedule';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SupportModule } from './support/support.module';
 import { HealthModule } from './health/health.module';
@@ -38,6 +39,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
     AdminModule,
     SettingsModule,
     RedisModule,
+    ScheduleModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
         transport: process.env.NODE_ENV !== 'production'

@@ -14,7 +14,7 @@ export interface RideSearchJobData {
   transmission?: string;
 }
 
-@Processor('rides-queue')
+@Processor('rides-queue', { concurrency: 10 })
 export class RideProcessor extends WorkerHost {
   private readonly logger = new Logger(RideProcessor.name);
 
